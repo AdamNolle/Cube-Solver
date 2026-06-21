@@ -1,0 +1,14 @@
+[package]
+name = "cube_solver"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+crossbeam-channel.workspace = true
+cube_core = { path = "../cube_core" }
+rand.workspace = true
+rand_chacha.workspace = true
+rayon.workspace = true
+serde.workspace = true
+

@@ -1,0 +1,14 @@
+[package]
+name = "solver_lab_app"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+cube_core = { path = "../cube_core" }
+cube_solver = { path = "../cube_solver" }
+directories.workspace = true
+eframe.workspace = true
+egui.workspace = true
+serde_json.workspace = true
+solver_store = { path = "../solver_store" }
