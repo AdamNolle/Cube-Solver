@@ -4,12 +4,18 @@ use crossbeam_channel::{unbounded, Sender};
 use cube_core::{CubeError, CubeSize, CubeSnapshot, CubeState, Face, Move, StickerCube};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(feature = "parallel")]
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
+// Work-in-progress N×N reduction solver — gated off by default so it can't be
+// reached in normal builds. Build/test it explicitly with `--features reduction`.
+#[cfg(feature = "reduction")]
 pub mod reduction;
 
 #[derive(Clone, Copy, Debug)]
@@ -402,6 +408,10 @@ fn score_key(path: &ScoredPath) -> (usize, usize) {
 /// Tournament selection: sample `k` individuals, return the fittest. The scored
 /// slice is sorted ascending, so the fittest is the lowest index drawn.
 fn tournament<'a>(rng: &mut ChaCha8Rng, scored: &'a [ScoredPath], k: usize) -> &'a [Move] {
+    debug_assert!(
+        !scored.is_empty(),
+        "tournament requires a non-empty population (guaranteed by SolverBudget::sanitized)"
+    );
     let mut best = rng.gen_range(0..scored.len());
     for _ in 1..k.max(1) {
         let idx = rng.gen_range(0..scored.len());
@@ -539,9 +549,17 @@ impl SolverWorker for EvolutionaryWorker {
                 break;
             }
 
-            // Evolve all islands in parallel; each touches only its own state.
+            // Evolve all islands (in parallel when threads are available; each
+            // island only touches its own state, so the sequential fallback is
+            // identical in result).
+            #[cfg(feature = "parallel")]
             let gen_bests: Vec<ScoredPath> = islands
                 .par_iter_mut()
+                .map(|island| evolve_island(island, &snapshot, &moves, &budget))
+                .collect();
+            #[cfg(not(feature = "parallel"))]
+            let gen_bests: Vec<ScoredPath> = islands
+                .iter_mut()
                 .map(|island| evolve_island(island, &snapshot, &moves, &budget))
                 .collect();
             nodes += budget.islands * budget.population;
@@ -613,6 +631,43 @@ pub fn run_solver_lab(snapshot: CubeSnapshot, budget: SolverBudget) -> SolverRun
     run_solver_lab_observed(snapshot, budget, |_| {})
 }
 
+fn lab_workers() -> Vec<Box<dyn SolverWorker>> {
+    vec![
+        Box::new(DeterministicSolver),
+        Box::new(BeamSearchWorker),
+        Box::new(EvolutionaryWorker { seed: 0xC0B3 }),
+    ]
+}
+
+/// Fold one worker event into the running best (replay-verified) and event log.
+fn ingest_event(
+    event: WorkerEvent,
+    snapshot: &CubeSnapshot,
+    best: &mut Option<SolutionCandidate>,
+    events: &mut Vec<WorkerEvent>,
+) {
+    if let Some(candidate) = &event.candidate {
+        if candidate.solved && candidate.verify_against(snapshot).unwrap_or(false) {
+            let better = best
+                .as_ref()
+                .map(|old| {
+                    (candidate.move_count, candidate.elapsed_ms) < (old.move_count, old.elapsed_ms)
+                })
+                .unwrap_or(true);
+            if better {
+                *best = Some(candidate.clone());
+            }
+        }
+    }
+    events.push(event);
+}
+
+/// Race all workers, returning the fewest-move replay-verified solution.
+///
+/// With the `parallel` feature each worker runs on its own OS thread; without it
+/// (e.g. wasm32) the workers run sequentially in the calling thread — the result
+/// is identical, only the wall-clock differs.
+#[cfg(feature = "parallel")]
 pub fn run_solver_lab_observed<F>(
     snapshot: CubeSnapshot,
     budget: SolverBudget,
@@ -621,17 +676,10 @@ pub fn run_solver_lab_observed<F>(
 where
     F: FnMut(&WorkerEvent),
 {
-    // Clamp the budget once so every worker is shielded from degenerate inputs.
     let budget = budget.sanitized();
     let (tx, rx) = unbounded();
-    let workers: Vec<Box<dyn SolverWorker>> = vec![
-        Box::new(DeterministicSolver),
-        Box::new(BeamSearchWorker),
-        Box::new(EvolutionaryWorker { seed: 0xC0B3 }),
-    ];
-    let mut handles = Vec::with_capacity(workers.len());
-
-    for worker in workers {
+    let mut handles = Vec::new();
+    for worker in lab_workers() {
         let worker_tx = tx.clone();
         let worker_snapshot = snapshot.clone();
         handles.push(thread::spawn(move || {
@@ -644,27 +692,66 @@ where
     let mut best: Option<SolutionCandidate> = None;
     for event in rx {
         observe(&event);
-        if let Some(candidate) = &event.candidate {
-            if candidate.solved && candidate.verify_against(&snapshot).unwrap_or(false) {
-                let better = best
-                    .as_ref()
-                    .map(|old| {
-                        (candidate.move_count, candidate.elapsed_ms)
-                            < (old.move_count, old.elapsed_ms)
-                    })
-                    .unwrap_or(true);
-                if better {
-                    best = Some(candidate.clone());
-                }
-            }
-        }
-        events.push(event);
+        ingest_event(event, &snapshot, &mut best, &mut events);
     }
-
     for handle in handles {
         let _ = handle.join();
     }
+    SolverRun { best, events }
+}
 
+#[cfg(not(feature = "parallel"))]
+pub fn run_solver_lab_observed<F>(
+    snapshot: CubeSnapshot,
+    budget: SolverBudget,
+    mut observe: F,
+) -> SolverRun
+where
+    F: FnMut(&WorkerEvent),
+{
+    let budget = budget.sanitized();
+    let (tx, rx) = unbounded();
+    for worker in lab_workers() {
+        worker.start(snapshot.clone(), budget, tx.clone());
+    }
+    drop(tx);
+
+    let mut events = Vec::new();
+    let mut best: Option<SolutionCandidate> = None;
+    // The sender (and every worker's clone) is dropped above, so this blocking
+    // drain yields all buffered events then terminates — same result as the
+    // threaded path, and robust to any future change in worker timing.
+    for event in rx {
+        observe(&event);
+        ingest_event(event, &snapshot, &mut best, &mut events);
+    }
+    SolverRun { best, events }
+}
+
+/// Run the (reliable, exact) deterministic solver with a generous `primary`
+/// budget and the two heuristic workers with a small `secondary` budget — so a
+/// deep scramble can be cracked by meet-in-the-middle without the beam/GA also
+/// running at full budget. Sequential orchestration (the deterministic engine
+/// stops as soon as it finds the meet), intended for single-threaded callers
+/// such as wasm. Returns the fewest-move, replay-verified solution.
+pub fn run_solver_lab_tiered(
+    snapshot: CubeSnapshot,
+    primary: SolverBudget,
+    secondary: SolverBudget,
+) -> SolverRun {
+    let primary = primary.sanitized();
+    let secondary = secondary.sanitized();
+    let (tx, rx) = unbounded();
+    DeterministicSolver.start(snapshot.clone(), primary, tx.clone());
+    BeamSearchWorker.start(snapshot.clone(), secondary, tx.clone());
+    EvolutionaryWorker { seed: 0xC0B3 }.start(snapshot.clone(), secondary, tx.clone());
+    drop(tx);
+
+    let mut events = Vec::new();
+    let mut best: Option<SolutionCandidate> = None;
+    for event in rx {
+        ingest_event(event, &snapshot, &mut best, &mut events);
+    }
     SolverRun { best, events }
 }
 

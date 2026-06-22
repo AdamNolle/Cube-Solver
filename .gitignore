@@ -1,3 +1,6 @@
 /target
+/src-tauri/target
+/src-tauri/gen/schemas
 *.sqlite3
 .DS_Store
+.serena/

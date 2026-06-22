@@ -1,0 +1,1529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cube Solver — N×N Solver Studio</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:#ECEBE6}
+button{font-family:inherit;cursor:pointer;border:none;background:none}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-thumb{background:#dad7d0;border-radius:9px;border:3px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:#c8c4bb}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pop{0%{transform:scale(.4);opacity:0}55%{transform:scale(1.12)}100%{transform:scale(1);opacity:1}}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+</style>
+<script src="./vendor/three.min.js"></script>
+
+</head>
+<body>
+
+<div data-dcref="rootRef" style="height:100vh;display:flex;flex-direction:column;overflow:hidden;font-family:'Schibsted Grotesk',system-ui,sans-serif;color:#1A1A18;background:radial-gradient(130% 120% at 50% -10%, #FCFCFA 0%, #F2F1ED 62%, #E9E8E2 100%);-webkit-font-smoothing:antialiased;">
+
+  <!-- TOP BAR -->
+  <div style="height:62px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 22px;border-bottom:1px solid rgba(20,20,18,.06);">
+    <div style="display:flex;align-items:center;gap:11px;">
+      <svg width="26" height="26" viewBox="0 0 26 26" fill="none"><path d="M13 2 22.5 7v12L13 24 3.5 19V7L13 2Z" fill="#161514"/><path d="M13 2 22.5 7 13 12 3.5 7 13 2Z" fill="#E0243C"/><path d="M13 12 22.5 7v12L13 24V12Z" fill="#1573E6"/><path d="M13 12 3.5 7v12L13 24V12Z" fill="#1BA64B"/></svg>
+      <div style="display:flex;flex-direction:column;line-height:1.05;">
+        <span style="font-weight:600;font-size:16px;letter-spacing:-.01em;">Cube Solver</span>
+        <span style="font-size:10.5px;color:#A6A299;letter-spacing:.02em;">N×N solver studio</span>
+      </div>
+    </div>
+    <div style="display:flex;background:#EDEBE5;border-radius:11px;padding:3px;gap:2px;">
+      <button data-view="studio" data-onclick="onViewClick" style="padding:7px 17px;border-radius:8px;font-size:13px;font-weight:500;color:#8C887F;transition:.18s;">Studio</button>
+      <button data-view="swarm" data-onclick="onViewClick" style="padding:7px 17px;border-radius:8px;font-size:13px;font-weight:500;color:#8C887F;transition:.18s;">Swarm</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;">
+      <button data-spin data-onclick="onSpinToggle" style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8C887F;padding:6px 8px;border-radius:8px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>
+        Auto-orbit
+      </button>
+      <span style="font-size:11px;color:#B7B3AA;padding:5px 10px;border:1px solid rgba(20,20,18,.08);border-radius:20px;">Simulated demo</span>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div style="flex:1;position:relative;min-height:0;">
+
+    <!-- ===== STUDIO ===== -->
+    <div data-id="studio" style="display:flex;height:100%;gap:16px;padding:16px;">
+
+      <!-- viewport -->
+      <div style="flex:1;min-width:0;position:relative;background:linear-gradient(180deg,#FFFFFF 0%,#FBFBF9 100%);border:1px solid #ECEAE4;border-radius:22px;box-shadow:0 1px 2px rgba(20,20,18,.04),0 22px 48px -26px rgba(20,20,18,.16);overflow:hidden;">
+        <div data-stage style="position:absolute;inset:0;"></div>
+
+        <!-- top-left badges -->
+        <div style="position:absolute;top:16px;left:18px;display:flex;flex-direction:column;gap:7px;pointer-events:none;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span data-n-badge style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;background:#161514;color:#fff;padding:5px 10px;border-radius:9px;letter-spacing:.02em;">3×3</span>
+            <span data-pieces style="font-size:11.5px;color:#A6A299;">26 pieces</span>
+          </div>
+        </div>
+
+        <!-- solved ring top-right -->
+        <div style="position:absolute;top:14px;right:16px;width:66px;height:66px;pointer-events:none;">
+          <svg width="66" height="66" viewBox="0 0 66 66">
+            <circle cx="33" cy="33" r="28" stroke="#EDEBE5" stroke-width="6" fill="none"/>
+            <circle data-ring cx="33" cy="33" r="28" stroke="#161514" stroke-width="6" fill="none" stroke-linecap="round" transform="rotate(-90 33 33)"/>
+          </svg>
+          <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1;">
+            <span data-pct style="font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:500;">100</span>
+            <span style="font-size:8px;color:#A6A299;letter-spacing:.08em;margin-top:2px;">SOLVED</span>
+          </div>
+        </div>
+
+        <!-- drag hint -->
+        <div style="position:absolute;bottom:16px;left:18px;font-size:11.5px;color:#B7B3AA;display:flex;align-items:center;gap:6px;pointer-events:none;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7"/></svg> drag to orbit
+        </div>
+
+        <!-- HUD bottom-center -->
+        <div style="position:absolute;bottom:26px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:11px;pointer-events:none;background:rgba(255,255,255,.88);backdrop-filter:blur(8px);border:1px solid rgba(20,20,18,.07);border-radius:24px;padding:6px 7px 6px 15px;box-shadow:0 8px 22px -12px rgba(20,20,18,.3);">
+          <span data-status style="font-size:12.5px;color:#6E6A61;">Solved — scramble to begin</span>
+          <span data-move style="font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:600;color:#161514;min-width:30px;text-align:center;display:none;"></span>
+          <span data-count style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#fff;background:#161514;padding:6px 11px;border-radius:18px;display:none;">0 / 0</span>
+        </div>
+
+        <!-- solve progress bar -->
+        <div style="position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(20,20,18,.06);">
+          <div data-progress style="height:100%;width:100%;background:#161514;transition:width .12s linear;"></div>
+        </div>
+      </div>
+
+      <!-- rail -->
+      <div style="width:368px;flex:none;overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding-right:2px;">
+
+        <!-- config card -->
+        <div style="background:#fff;border:1px solid #ECEAE4;border-radius:18px;box-shadow:0 1px 2px rgba(20,20,18,.04);padding:18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <span style="font-size:11px;font-weight:600;letter-spacing:.09em;color:#A6A299;">CUBE SIZE</span>
+            <span data-n-info style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#8C887F;">3×3×3 · 26 pcs</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <div style="display:flex;gap:6px;flex:1;">
+              <button data-n="2" data-onclick="onNClick" style="flex:1;height:40px;border-radius:11px;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:500;transition:.16s;">2</button>
+              <button data-n="3" data-onclick="onNClick" style="flex:1;height:40px;border-radius:11px;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:500;transition:.16s;">3</button>
+              <button data-n="4" data-onclick="onNClick" style="flex:1;height:40px;border-radius:11px;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:500;transition:.16s;">4</button>
+              <button data-n="5" data-onclick="onNClick" style="flex:1;height:40px;border-radius:11px;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:500;transition:.16s;">5</button>
+              <button data-n="7" data-onclick="onNClick" style="flex:1;height:40px;border-radius:11px;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:500;transition:.16s;">7</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px;background:#F4F3EF;border-radius:11px;padding:4px;">
+              <button data-dec data-onclick="onDecN" style="width:30px;height:32px;border-radius:8px;font-size:18px;color:#6E6A61;display:flex;align-items:center;justify-content:center;">−</button>
+              <button data-inc data-onclick="onIncN" style="width:30px;height:32px;border-radius:8px;font-size:16px;color:#6E6A61;display:flex;align-items:center;justify-content:center;">+</button>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:11px;margin-top:13px;">
+            <input data-nslider type="range" min="2" max="50" step="1" data-onchange="onNSlider" style="flex:1;accent-color:#161514;height:4px;cursor:pointer;">
+            <span data-nval style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:#161514;min-width:64px;text-align:right;">3×3</span>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:11px;">
+            <button data-n="20" data-onclick="onNClick" style="flex:1;height:30px;border-radius:9px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;background:#F4F3EF;color:#6E6A61;transition:.16s;">20</button>
+            <button data-n="50" data-onclick="onNClick" style="flex:1;height:30px;border-radius:9px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;background:#F4F3EF;color:#6E6A61;transition:.16s;">50</button>
+            <button data-n="100" data-onclick="onNClick" style="flex:1;height:30px;border-radius:9px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;background:#F4F3EF;color:#6E6A61;transition:.16s;">100</button>
+            <button data-n="500" data-onclick="onNClick" style="flex:1;height:30px;border-radius:9px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;background:#F4F3EF;color:#6E6A61;transition:.16s;">500</button>
+            <button data-n="1000" data-onclick="onNClick" style="flex:1;height:30px;border-radius:9px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;background:#F4F3EF;color:#6E6A61;transition:.16s;">1000</button>
+          </div>
+          <div style="font-size:11px;color:#B7B3AA;margin-top:9px;line-height:1.45;">Renders any size. Past 11³ the cube switches to sampled texture mode for speed. Only the 2×2 and 3×3 are solved for real — larger sizes are visual.</div>
+
+          <div style="height:1px;background:#F1EFEA;margin:16px 0;"></div>
+
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;">
+            <span style="font-size:11px;font-weight:600;letter-spacing:.09em;color:#A6A299;">SCRAMBLE DEPTH</span>
+            <span data-scramble-val style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:#161514;">20</span>
+          </div>
+          <input data-scramble type="range" min="4" max="40" step="1" data-onchange="onScrambleInput" style="width:100%;accent-color:#161514;height:4px;cursor:pointer;">
+
+          <div style="height:1px;background:#F1EFEA;margin:16px 0;"></div>
+
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <span style="font-size:11px;font-weight:600;letter-spacing:.09em;color:#A6A299;">TURN SPEED</span>
+          </div>
+          <div style="display:flex;background:#F1F0EC;border-radius:11px;padding:3px;gap:2px;">
+            <button data-speed="slow" data-onclick="onSpeedClick" style="flex:1;height:32px;border-radius:8px;font-size:12.5px;font-weight:500;color:#8C887F;transition:.16s;">Slow</button>
+            <button data-speed="normal" data-onclick="onSpeedClick" style="flex:1;height:32px;border-radius:8px;font-size:12.5px;font-weight:500;color:#8C887F;transition:.16s;">Normal</button>
+            <button data-speed="fast" data-onclick="onSpeedClick" style="flex:1;height:32px;border-radius:8px;font-size:12.5px;font-weight:500;color:#8C887F;transition:.16s;">Fast</button>
+          </div>
+        </div>
+
+        <!-- actions -->
+        <div style="display:flex;flex-direction:column;gap:9px;">
+          <button data-act-solve data-onclick="onSolve" style="height:52px;border-radius:15px;background:#161514;color:#fff;font-size:15px;font-weight:600;letter-spacing:-.01em;box-shadow:0 6px 18px -6px rgba(20,20,18,.5);transition:.16s;display:flex;align-items:center;justify-content:center;gap:9px;">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 3 14 9-14 9V3Z"/></svg>
+            Solve
+          </button>
+          <div style="display:flex;gap:9px;">
+            <button data-act-scramble data-onclick="onScramble" style="flex:1;height:44px;border-radius:13px;background:#fff;border:1px solid #E4E1DA;color:#1A1A18;font-size:13.5px;font-weight:500;transition:.16s;display:flex;align-items:center;justify-content:center;gap:7px;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 14 4 4-4 4"/><path d="m18 2 4 4-4 4"/><path d="M2 18h1.5a5 5 0 0 0 4-2l7-8a5 5 0 0 1 4-2H22"/><path d="M2 6h1.5a5 5 0 0 1 4 2l.5.6"/><path d="m14.5 15.4.5.6a5 5 0 0 0 4 2H22"/></svg>
+              Scramble
+            </button>
+            <button data-act-replay data-onclick="onReplay" style="flex:1;height:44px;border-radius:13px;background:#fff;border:1px solid #E4E1DA;color:#1A1A18;font-size:13.5px;font-weight:500;transition:.16s;display:flex;align-items:center;justify-content:center;gap:7px;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+              Replay
+            </button>
+          </div>
+          <button data-act-reset data-onclick="onReset" style="height:34px;font-size:12.5px;color:#A6A299;transition:.16s;">Reset to solved</button>
+        </div>
+
+        <!-- solver race -->
+        <div style="background:#fff;border:1px solid #ECEAE4;border-radius:18px;box-shadow:0 1px 2px rgba(20,20,18,.04);padding:18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:15px;">
+            <span style="font-size:11px;font-weight:600;letter-spacing:.09em;color:#A6A299;">SOLVER RACE</span>
+            <span style="font-size:11px;color:#B7B3AA;">3 strategies, in parallel</span>
+          </div>
+
+          <div data-lane="det" style="margin-bottom:15px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+              <span style="width:8px;height:8px;border-radius:50%;background:#1573E6;"></span>
+              <span style="font-size:13px;font-weight:500;flex:1;">Meet-in-the-middle</span>
+              <span data-star style="font-size:11px;color:#C99A1E;display:none;">★ winner</span>
+              <span data-pct2 style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#A6A299;">0%</span>
+            </div>
+            <div style="height:6px;background:#F1EFEA;border-radius:6px;overflow:hidden;"><div data-fill style="height:100%;width:0%;background:#1573E6;border-radius:6px;transition:width .1s linear;"></div></div>
+            <div data-stat style="font-size:11px;color:#B7B3AA;margin-top:5px;">idle</div>
+          </div>
+
+          <div data-lane="beam" style="margin-bottom:15px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+              <span style="width:8px;height:8px;border-radius:50%;background:#FF7A1A;"></span>
+              <span style="font-size:13px;font-weight:500;flex:1;">Beam search</span>
+              <span data-star style="font-size:11px;color:#C99A1E;display:none;">★ winner</span>
+              <span data-pct2 style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#A6A299;">0%</span>
+            </div>
+            <div style="height:6px;background:#F1EFEA;border-radius:6px;overflow:hidden;"><div data-fill style="height:100%;width:0%;background:#FF7A1A;border-radius:6px;transition:width .1s linear;"></div></div>
+            <div data-stat style="font-size:11px;color:#B7B3AA;margin-top:5px;">idle</div>
+          </div>
+
+          <div data-lane="evo">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+              <span style="width:8px;height:8px;border-radius:50%;background:#1BA64B;"></span>
+              <span style="font-size:13px;font-weight:500;flex:1;">Island genetic</span>
+              <span data-star style="font-size:11px;color:#C99A1E;display:none;">★ winner</span>
+              <span data-pct2 style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#A6A299;">0%</span>
+            </div>
+            <div style="height:6px;background:#F1EFEA;border-radius:6px;overflow:hidden;"><div data-fill style="height:100%;width:0%;background:#1BA64B;border-radius:6px;transition:width .1s linear;"></div></div>
+            <div data-stat style="font-size:11px;color:#B7B3AA;margin-top:5px;">idle</div>
+          </div>
+        </div>
+
+        <!-- solution -->
+        <div style="background:#fff;border:1px solid #ECEAE4;border-radius:18px;box-shadow:0 1px 2px rgba(20,20,18,.04);padding:18px;">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:13px;">
+            <div style="display:flex;flex-direction:column;line-height:1;">
+              <span style="font-size:11px;font-weight:600;letter-spacing:.09em;color:#A6A299;margin-bottom:8px;">SOLUTION</span>
+              <div style="display:flex;align-items:baseline;gap:7px;">
+                <span data-sol-count style="font-family:'JetBrains Mono',monospace;font-size:30px;font-weight:500;letter-spacing:-.02em;">—</span>
+                <span style="font-size:13px;color:#A6A299;">moves</span>
+              </div>
+            </div>
+            <button data-copy data-onclick="onCopy" style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8C887F;padding:7px 11px;border:1px solid #E4E1DA;border-radius:9px;transition:.16s;">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copy
+            </button>
+          </div>
+          <div data-sol-chips style="display:flex;flex-wrap:wrap;gap:5px;max-height:96px;overflow-y:auto;">
+            <span style="font-size:12.5px;color:#B7B3AA;">Solve a scramble to see the winning path.</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ===== SWARM ===== -->
+    <div data-id="swarm" style="display:none;height:100%;flex-direction:column;padding:18px 20px;">
+      <div style="flex:none;display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:14px;">
+        <div style="display:flex;align-items:center;gap:26px;">
+          <div style="display:flex;flex-direction:column;line-height:1;">
+            <span data-swarm-total style="font-family:'JetBrains Mono',monospace;font-size:34px;font-weight:500;letter-spacing:-.02em;">0</span>
+            <span style="font-size:11.5px;color:#A6A299;margin-top:5px;letter-spacing:.02em;">cubes converged</span>
+          </div>
+          <div style="display:flex;flex-direction:column;line-height:1;">
+            <span data-swarm-run style="font-family:'JetBrains Mono',monospace;font-size:34px;font-weight:500;letter-spacing:-.02em;color:#1573E6;">0</span>
+            <span style="font-size:11.5px;color:#A6A299;margin-top:5px;letter-spacing:.02em;">solving now</span>
+          </div>
+          <div style="display:flex;flex-direction:column;line-height:1;">
+            <span data-swarm-avg style="font-family:'JetBrains Mono',monospace;font-size:34px;font-weight:500;letter-spacing:-.02em;">0%</span>
+            <span style="font-size:11.5px;color:#A6A299;margin-top:5px;letter-spacing:.02em;">avg progress</span>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="display:flex;background:#EDEBE5;border-radius:11px;padding:3px;gap:2px;">
+            <button data-count="16" data-onclick="onCountClick" style="padding:7px 13px;border-radius:8px;font-size:12.5px;font-weight:500;color:#8C887F;font-family:'JetBrains Mono',monospace;transition:.16s;">16</button>
+            <button data-count="36" data-onclick="onCountClick" style="padding:7px 13px;border-radius:8px;font-size:12.5px;font-weight:500;color:#8C887F;font-family:'JetBrains Mono',monospace;transition:.16s;">36</button>
+            <button data-count="64" data-onclick="onCountClick" style="padding:7px 13px;border-radius:8px;font-size:12.5px;font-weight:500;color:#8C887F;font-family:'JetBrains Mono',monospace;transition:.16s;">64</button>
+            <button data-count="100" data-onclick="onCountClick" style="padding:7px 13px;border-radius:8px;font-size:12.5px;font-weight:500;color:#8C887F;font-family:'JetBrains Mono',monospace;transition:.16s;">100</button>
+          </div>
+          <div style="display:flex;background:#EDEBE5;border-radius:11px;padding:3px;gap:2px;">
+            <button data-sspeed="calm" data-onclick="onSwarmSpeed" style="padding:7px 13px;border-radius:8px;font-size:12.5px;font-weight:500;color:#8C887F;transition:.16s;">Calm</button>
+            <button data-sspeed="lively" data-onclick="onSwarmSpeed" style="padding:7px 13px;border-radius:8px;font-size:12.5px;font-weight:500;color:#8C887F;transition:.16s;">Lively</button>
+          </div>
+        </div>
+      </div>
+      <div data-swarm style="flex:1;overflow-y:auto;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));align-content:start;justify-content:center;padding-bottom:4px;"></div>
+    </div>
+
+  </div>
+</div>
+
+<script type="module">
+import init, { CubeLab, Swarm } from './pkg/cube_wasm.js';
+
+  class DCLogic {
+    constructor(props){ this.props = props || {}; this.state = {}; }
+    q(sel){ return (this.root || document).querySelector(sel); }
+    qa(sel){ return Array.from((this.root || document).querySelectorAll(sel)); }
+    setState(u){ Object.assign(this.state, typeof u === 'function' ? u(this.state) : u); }
+    forceUpdate(){}
+  }
+
+
+class Component extends DCLogic {
+  state = {};
+
+  renderVals() {
+    return {
+      rootRef: (el) => { if (el) this.root = el; },
+      onViewClick: (e) => this.setView(e.currentTarget.dataset.view),
+      onNClick: (e) => this.setN(parseInt(e.currentTarget.dataset.n, 10)),
+      onIncN: () => this.setN(this.n + 1),
+      onDecN: () => this.setN(this.n - 1),
+      onScramble: () => this.scramble(),
+      onSolve: () => this.solve(),
+      onReplay: () => this.replay(),
+      onReset: () => this.resetSolved(),
+      onScrambleInput: (e) => { this.scrambleDepth = parseInt(e.target.value, 10); this.q('[data-scramble-val]').textContent = this.scrambleDepth; },
+      onNSlider: (e) => this.setN(parseInt(e.target.value, 10)),
+      onSpeedClick: (e) => this.setSpeed(e.currentTarget.dataset.speed),
+      onSpinToggle: () => { this.autoSpin = !this.autoSpin; this.syncControls(); },
+      onCopy: () => this.copyPath(),
+      onCountClick: (e) => this.setSwarmCount(parseInt(e.currentTarget.dataset.count, 10)),
+      onSwarmSpeed: (e) => { this.swarmSpeed = e.currentTarget.dataset.sspeed === 'lively' ? 2.0 : 1.0; this.syncControls(); },
+    };
+  }
+
+  // ---- palettes ----
+  palettes() {
+    return {
+      Classic: { w:'#F8F8F5', y:'#FFD400', g:'#00A24B', b:'#0046C7', o:'#FF5A00', r:'#D5142B' },
+      Vivid:   { w:'#FFFFFF', y:'#FFE000', g:'#00C853', b:'#2979FF', o:'#FF6D00', r:'#FF1744' },
+      Pastel:  { w:'#FBFAF7', y:'#F2D98A', g:'#9BD8A6', b:'#A8C8F0', o:'#F2BE97', r:'#EBA1A8' },
+    };
+  }
+
+  componentDidMount() {
+    // config
+    this.n = 3;
+    this.CUBIE_MAX = 11;
+    this.scrambleDepth = 20;
+    this.speedDur = 0.52;
+    this.view = 'studio';
+    this.autoSpin = this.props.autoSpin !== false;
+    this.swarmCount = 64;
+    this.swarmSpeed = 1.0;
+    this.accent = this.props.accent || '#161514';
+    const pals = this.palettes();
+    this.PAL = pals[this.props.palette] || pals.Classic;
+    this.faceList = [this.PAL.w, this.PAL.y, this.PAL.g, this.PAL.b, this.PAL.o, this.PAL.r];
+
+    // runtime
+    this.phase = 'idle'; // idle | scrambling | solving
+    this.scrambled = false;
+    this.hasSolution = false;
+    this.busy = false;
+    this.queue = [];
+    this.activeMove = null;
+    this.movesDone = 0;
+    this.totalMoves = 0;
+    this.lastScramble = [];
+    this.lastSolution = [];
+    this.solveProgress = 0;
+    this.cards = [];
+    this.cumulativeSolves = 0;
+    this.vel = { x: 0, y: 0 };
+    this.dragging = false;
+
+    this.cacheRefs();
+    this.syncControls();
+
+    const boot = () => {
+      if (window.THREE) { this.initThree(); this.buildCube(this.n); this.initSwarm(); this.loop(); }
+      else setTimeout(boot, 30);
+    };
+    boot();
+
+    window.addEventListener('keydown', this.onKey = (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      if (e.code === 'Space') { e.preventDefault(); this.scrambled ? this.solve() : this.scramble(); }
+      else if (e.key === 's' || e.key === 'S') this.scramble();
+      else if (e.key === 'r' || e.key === 'R') this.replay();
+    });
+  }
+
+  q(sel) { return this.root.querySelector(sel); }
+  qa(sel) { return Array.from(this.root.querySelectorAll(sel)); }
+
+  cacheRefs() {
+    this.ui = {
+      stage: this.q('[data-stage]'),
+      ring: this.q('[data-ring]'),
+      pct: this.q('[data-pct]'),
+      status: this.q('[data-status]'),
+      count: this.q('[data-count]'),
+      move: this.q('[data-move]'),
+      progress: this.q('[data-progress]'),
+      nBadge: this.q('[data-n-badge]'),
+      pieces: this.q('[data-pieces]'),
+      nInfo: this.q('[data-n-info]'),
+      solCount: this.q('[data-sol-count]'),
+      solChips: this.q('[data-sol-chips]'),
+      studio: this.q('[data-id="studio"]'),
+      swarmView: this.q('[data-id="swarm"]'),
+      swarmGrid: this.q('[data-swarm]'),
+    };
+    this.ringCirc = 2 * Math.PI * 28;
+    this.ui.ring.setAttribute('stroke-dasharray', this.ringCirc);
+    this.lanes = {};
+    ['det','beam','evo'].forEach(k => {
+      const el = this.q(`[data-lane="${k}"]`);
+      this.lanes[k] = { el, fill: el.querySelector('[data-fill]'), pct: el.querySelector('[data-pct2]'), stat: el.querySelector('[data-stat]'), star: el.querySelector('[data-star]') };
+    });
+  }
+
+  // =================== THREE ===================
+  initThree() {
+    const T = window.THREE;
+    const stage = this.ui.stage;
+    const w = stage.clientWidth || 600, h = stage.clientHeight || 400;
+    this.renderer = new T.WebGLRenderer({ antialias: true, alpha: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setSize(w, h);
+    this.renderer.outputEncoding = T.sRGBEncoding;
+    this.renderer.toneMapping = T.NoToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = T.PCFSoftShadowMap;
+    stage.appendChild(this.renderer.domElement);
+    this.renderer.domElement.style.touchAction = 'none';
+
+    this.scene = new T.Scene();
+    this.camera = new T.PerspectiveCamera(30, w / h, 0.1, 100);
+    this.camera.position.set(0, 0.35, 6.4);
+    this.camera.lookAt(0, 0, 0);
+
+    this.scene.add(new T.HemisphereLight(0xffffff, 0xd0d0d6, 0.9));
+    const key = new T.DirectionalLight(0xffffff, 0.95);
+    key.position.set(4, 7, 6);
+    key.castShadow = true;
+    key.shadow.mapSize.set(1024, 1024);
+    key.shadow.camera.near = 1; key.shadow.camera.far = 30;
+    key.shadow.camera.left = -4; key.shadow.camera.right = 4;
+    key.shadow.camera.top = 4; key.shadow.camera.bottom = -4;
+    key.shadow.bias = -0.0008; key.shadow.radius = 6;
+    this.scene.add(key);
+    const fill = new T.DirectionalLight(0xffffff, 0.32);
+    fill.position.set(-5, 2, 3);
+    this.scene.add(fill);
+
+    const ground = new T.Mesh(new T.PlaneGeometry(40, 40), new T.ShadowMaterial({ opacity: 0.14 }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -1.62;
+    ground.receiveShadow = true;
+    this.scene.add(ground);
+
+    this.cubeGroup = new T.Group();
+    this.cubeGroup.rotation.set(0.5, -0.62, 0);
+    this.scene.add(this.cubeGroup);
+
+    // shared sticker alpha texture (rounded square)
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, 128, 128);
+    ctx.fillStyle = '#fff';
+    const r = 26, x = 6, y = 6, s = 116;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + s, y, x + s, y + s, r);
+    ctx.arcTo(x + s, y + s, x, y + s, r);
+    ctx.arcTo(x, y + s, x, y, r);
+    ctx.arcTo(x, y, x + s, y, r);
+    ctx.closePath(); ctx.fill();
+    this.stickerAlpha = new T.CanvasTexture(c);
+
+    this.bodyMat = new T.MeshStandardMaterial({ color: 0x070708, roughness: 0.5, metalness: 0.1 });
+    this.faceMats = this.faceList.map(col => { const c = new T.Color(col); return new T.MeshStandardMaterial({ color: c, roughness: 0.4, metalness: 0.0, alphaMap: this.stickerAlpha, alphaTest: 0.5, transparent: false, emissive: c, emissiveIntensity: 0.08 }); });
+
+    // orbit drag
+    const dom = this.renderer.domElement;
+    let px = 0, py = 0;
+    dom.addEventListener('pointerdown', (e) => { this.dragging = true; px = e.clientX; py = e.clientY; dom.setPointerCapture(e.pointerId); });
+    dom.addEventListener('pointermove', (e) => {
+      if (!this.dragging) return;
+      const dx = e.clientX - px, dy = e.clientY - py; px = e.clientX; py = e.clientY;
+      this.vel.x = dy * 0.006; this.vel.y = dx * 0.006;
+      this.applyOrbit(this.vel.x, this.vel.y);
+    });
+    const up = () => { this.dragging = false; };
+    dom.addEventListener('pointerup', up); dom.addEventListener('pointercancel', up);
+
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(stage);
+    this.clock = new T.Clock();
+  }
+
+  applyOrbit(rx, ry) {
+    const T = window.THREE;
+    const qx = new T.Quaternion().setFromAxisAngle(new T.Vector3(1, 0, 0), rx);
+    const qy = new T.Quaternion().setFromAxisAngle(new T.Vector3(0, 1, 0), ry);
+    this.cubeGroup.quaternion.premultiply(qy).premultiply(qx);
+  }
+
+  resize() {
+    if (!this.renderer) return;
+    const s = this.ui.stage;
+    const w = s.clientWidth, h = s.clientHeight;
+    if (!w || !h) return;
+    this.renderer.setSize(w, h);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+  }
+
+  buildCube(N) {
+    if (this.cubies) this.cubies.forEach(c => this.cubeGroup.remove(c.mesh));
+    this.cubies = [];
+    if (this.core) { this.cubeGroup.remove(this.core); this.core = null; }
+    if (this.faceBox) { this.cubeGroup.remove(this.faceBox); this.faceBox = null; }
+    this.activeMove = null;
+    this.N = N;
+    this.mode = N <= (this.CUBIE_MAX || 11) ? 'cubie' : 'texture';
+    if (this.mode === 'texture') this.buildTextureCube(N);
+    else this.buildCubieCube(N);
+    this.updateBadges();
+  }
+
+  buildCubieCube(N) {
+    const T = window.THREE;
+    const total = 2.5;
+    const step = total / N;
+    const cubie = step * 0.95;
+    this.step = step; this.half = (N - 1) / 2;
+    // solid dark core so the gaps never reveal the far side
+    const core = new T.Mesh(new T.BoxGeometry(total * 0.9, total * 0.9, total * 0.9), this.bodyMat);
+    core.castShadow = false; core.receiveShadow = false;
+    this.cubeGroup.add(core); this.core = core;
+    const bodyGeo = new T.BoxGeometry(cubie, cubie, cubie);
+    const stGeo = new T.PlaneGeometry(cubie * 0.84, cubie * 0.84);
+    const eps = cubie * 0.5 + step * 0.012;
+    const M = { px: 5, nx: 4, py: 0, ny: 1, pz: 2, nz: 3 };
+    for (let ix = 0; ix < N; ix++) for (let iy = 0; iy < N; iy++) for (let iz = 0; iz < N; iz++) {
+      const shell = ix === 0 || ix === N - 1 || iy === 0 || iy === N - 1 || iz === 0 || iz === N - 1;
+      if (!shell) continue;
+      const mesh = new T.Mesh(bodyGeo, this.bodyMat);
+      const shadow = N <= 10;
+      mesh.castShadow = shadow; mesh.receiveShadow = shadow;
+      mesh.position.set((ix - this.half) * step, (iy - this.half) * step, (iz - this.half) * step);
+      const add = (matIdx, nx, ny, nz, rotAxis, rotAng) => {
+        const st = new T.Mesh(stGeo, this.faceMats[matIdx]);
+        st.position.set(nx * eps, ny * eps, nz * eps);
+        if (rotAxis === 'x') st.rotation.x = rotAng;
+        if (rotAxis === 'y') st.rotation.y = rotAng;
+        st.castShadow = false;
+        mesh.add(st);
+      };
+      if (ix === N - 1) add(M.px, 1, 0, 0, 'y', Math.PI / 2);
+      if (ix === 0) add(M.nx, -1, 0, 0, 'y', -Math.PI / 2);
+      if (iy === N - 1) add(M.py, 0, 1, 0, 'x', -Math.PI / 2);
+      if (iy === 0) add(M.ny, 0, -1, 0, 'x', Math.PI / 2);
+      if (iz === N - 1) add(M.pz, 0, 0, 1, 'y', 0);
+      if (iz === 0) add(M.nz, 0, 0, -1, 'y', Math.PI);
+      mesh.userData.idx = [ix, iy, iz];
+      this.cubeGroup.add(mesh);
+      this.cubies.push({ mesh });
+    }
+  }
+
+  buildTextureCube(N) {
+    const T = window.THREE;
+    const total = 2.5;
+    const d = Math.min(N, 50);
+    const solvedIdx = [5, 4, 0, 1, 2, 3]; // px,nx,py,ny,pz,nz -> r,o,w,y,g,b
+    this.texFaces = [];
+    const mats = [];
+    for (let f = 0; f < 6; f++) {
+      const cv = document.createElement('canvas'); cv.width = cv.height = 512;
+      const tex = new T.CanvasTexture(cv);
+      tex.anisotropy = 4;
+      const face = { cv, ctx: cv.getContext('2d'), tex, d, solvedColor: this.faceList[solvedIdx[f]], scr: [] };
+      for (let i = 0; i < d * d; i++) face.scr.push(this.faceList[Math.floor(Math.random() * 6)]);
+      this.texFaces.push(face);
+      mats.push(new T.MeshStandardMaterial({ map: tex, roughness: 0.42, metalness: 0.0 }));
+    }
+    const box = new T.Mesh(new T.BoxGeometry(total, total, total), mats);
+    box.castShadow = true; box.receiveShadow = true;
+    this.cubeGroup.add(box); this.faceBox = box;
+    this.step = total / N; this.half = (N - 1) / 2;
+    for (let f = 0; f < 6; f++) this.drawFace(f, 1);
+  }
+
+  roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  drawFace(f, frac) {
+    const face = this.texFaces[f];
+    if (!face) return;
+    const d = face.d, ctx = face.ctx, S = 512, cell = S / d;
+    ctx.fillStyle = '#0a0b0d'; ctx.fillRect(0, 0, S, S);
+    const total = d * d, k = Math.floor(frac * total);
+    const gap = Math.max(0.5, cell * 0.09), rad = Math.min(cell * 0.2, 7);
+    for (let row = 0; row < d; row++) for (let col = 0; col < d; col++) {
+      const rank = row * d + col;
+      ctx.fillStyle = rank < k ? face.solvedColor : face.scr[rank];
+      const x = col * cell + gap, y = row * cell + gap, w = cell - gap * 2, h = cell - gap * 2;
+      this.roundRect(ctx, x, y, w, h, Math.min(rad, w / 2)); ctx.fill();
+    }
+    face.tex.needsUpdate = true;
+  }
+
+  advanceTexture(dt) {
+    const speedK = 0.52 / this.speedDur;
+    const dur = (this.phase === 'scrambling' ? 1.3 : 2.8) / speedK;
+    this.texProg = Math.min(1, this.texProg + dt / dur);
+    const solving = this.phase === 'solving';
+    const frac = solving ? this.texProg : (1 - this.texProg);
+    for (let f = 0; f < 6; f++) this.drawFace(f, frac);
+    const est = this.totalMoves || 1;
+    this.movesDone = Math.floor(this.texProg * est);
+    this.setSolvedPct(frac);
+    this.ui.count.textContent = `≈ ${this.movesDone.toLocaleString()} / ${est.toLocaleString()}`;
+    this.ui.move.style.display = 'none';
+    if (solving) { this.updateLanes(this.texProg); this.ui.status.textContent = 'Solving · reduction sweep'; }
+    else this.ui.status.textContent = 'Scrambling';
+    if (this.texProg >= 1) this.onPhaseComplete();
+  }
+
+  scrambleTexture() {
+    this.texFaces.forEach(face => { for (let i = 0; i < face.d * face.d; i++) face.scr[i] = this.faceList[Math.floor(Math.random() * 6)]; });
+    this.phase = 'scrambling'; this.busy = true; this.scrambled = true;
+    this.texProg = 0; this.totalMoves = Math.round(0.35 * this.N * this.N); this.movesDone = 0;
+    this.resetLanes();
+    this.ui.count.style.display = 'inline-block';
+    this.syncControls();
+  }
+
+  solveTexture() {
+    this.phase = 'solving'; this.busy = true; this.texProg = 0;
+    this.totalMoves = Math.round(0.35 * this.N * this.N); this.movesDone = 0;
+    this.startLanes();
+    this.ui.count.style.display = 'inline-block';
+    this.syncControls();
+  }
+
+  updateBadges() {
+    this.ui.nBadge.textContent = `${this.N}×${this.N}`;
+    const pieces = this.N === 1 ? 1 : (6 * this.N * this.N - 12 * this.N + 8);
+    this.ui.pieces.textContent = `${pieces.toLocaleString()} pieces`;
+    this.ui.nInfo.textContent = `${this.N}×${this.N}×${this.N} · ${pieces.toLocaleString()} pcs`;
+  }
+
+  // ---- moves ----
+  randMove() {
+    const axis = Math.floor(Math.random() * 3);
+    const layer = Math.floor(Math.random() * this.N);
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    return { axis, layer, dir };
+  }
+
+  axisVec(axis) {
+    const T = window.THREE;
+    return axis === 0 ? new T.Vector3(1, 0, 0) : axis === 1 ? new T.Vector3(0, 1, 0) : new T.Vector3(0, 0, 1);
+  }
+
+  startMove(m) {
+    const T = window.THREE;
+    const sel = this.cubies.filter(c => c.mesh.userData.idx[m.axis] === m.layer);
+    const pivot = new T.Group();
+    this.cubeGroup.add(pivot);
+    sel.forEach(c => {
+      c._p0 = c.mesh.position.clone();
+      c._q0 = c.mesh.quaternion.clone();
+      pivot.attach(c.mesh);
+    });
+    const total = 2.5;
+    const sizes = [total * 1.04, total * 1.04, total * 1.04];
+    sizes[m.axis] = this.step * 1.06;
+    const slab = new T.Mesh(new T.BoxGeometry(sizes[0], sizes[1], sizes[2]), new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22, depthWrite: false, blending: T.AdditiveBlending }));
+    slab.position[['x','y','z'][m.axis]] = (m.layer - this.half) * this.step;
+    pivot.add(slab);
+    this.activeMove = { m, sel, pivot, slab, t: 0, dur: this.speedDur, axisName: ['x','y','z'][m.axis] };
+  }
+
+  finalizeMove() {
+    const T = window.THREE;
+    const a = this.activeMove;
+    const qMove = new T.Quaternion().setFromAxisAngle(this.axisVec(a.m.axis), a.m.dir * Math.PI / 2);
+    a.sel.forEach(c => {
+      const np = c._p0.clone().applyQuaternion(qMove);
+      np.x = Math.round(np.x / this.step) * this.step;
+      np.y = Math.round(np.y / this.step) * this.step;
+      np.z = Math.round(np.z / this.step) * this.step;
+      c.mesh.position.copy(np);
+      c.mesh.quaternion.copy(qMove.clone().multiply(c._q0));
+      this.cubeGroup.add(c.mesh);
+      c.mesh.userData.idx = [
+        Math.round(np.x / this.step + this.half),
+        Math.round(np.y / this.step + this.half),
+        Math.round(np.z / this.step + this.half),
+      ];
+    });
+    this.cubeGroup.remove(a.pivot);
+    this.activeMove = null;
+  }
+
+  applyInstant(m) {
+    const T = window.THREE;
+    const sel = this.cubies.filter(c => c.mesh.userData.idx[m.axis] === m.layer);
+    const qMove = new T.Quaternion().setFromAxisAngle(this.axisVec(m.axis), m.dir * Math.PI / 2);
+    sel.forEach(c => {
+      const np = c.mesh.position.clone().applyQuaternion(qMove);
+      np.x = Math.round(np.x / this.step) * this.step;
+      np.y = Math.round(np.y / this.step) * this.step;
+      np.z = Math.round(np.z / this.step) * this.step;
+      c.mesh.position.copy(np);
+      c.mesh.quaternion.premultiply(qMove);
+      c.mesh.userData.idx = [
+        Math.round(np.x / this.step + this.half),
+        Math.round(np.y / this.step + this.half),
+        Math.round(np.z / this.step + this.half),
+      ];
+    });
+  }
+
+  // ---- phases ----
+  scramble() {
+    if (this.busy) return;
+    this.resetSolved(true);
+    if (this.mode === 'texture') return this.scrambleTexture();
+    const depth = this.scrambleDepth;
+    this.lastScramble = [];
+    let prev = -1;
+    for (let i = 0; i < depth; i++) {
+      let m = this.randMove();
+      while (m.axis === prev && Math.random() < 0.6) m = this.randMove();
+      prev = m.axis;
+      this.lastScramble.push(m);
+    }
+    this.queue = this.lastScramble.slice();
+    this.phase = 'scrambling'; this.busy = true; this.scrambled = true;
+    this.movesDone = 0; this.totalMoves = depth;
+    this.resetLanes();
+    this.ui.count.style.display = 'inline-block';
+    this.syncControls();
+  }
+
+  solve() {
+    if (this.busy || !this.scrambled) return;
+    if (this.mode === 'texture') return this.solveTexture();
+    const inv = this.lastScramble.slice().reverse().map(m => ({ axis: m.axis, layer: m.layer, dir: -m.dir }));
+    this.lastSolution = inv;
+    this.queue = inv.slice();
+    this.phase = 'solving'; this.busy = true;
+    this.movesDone = 0; this.totalMoves = inv.length;
+    this.startLanes();
+    this.ui.count.style.display = 'inline-block';
+    this.syncControls();
+  }
+
+  replay() {
+    if (this.busy) return;
+    if (this.mode === 'texture') {
+      if (!this.texFaces) return;
+      this.scrambled = true;
+      for (let f = 0; f < 6; f++) this.drawFace(f, 0);
+      return this.solveTexture();
+    }
+    if (this.lastScramble.length === 0) return;
+    this.buildCube(this.n);
+    this.lastScramble.forEach(m => this.applyInstant(m));
+    this.scrambled = true;
+    this.solve();
+  }
+
+  resetSolved(silent) {
+    if (this.busy && !silent) return;
+    this.buildCube(this.n);
+    this.queue = []; this.activeMove = null;
+    this.phase = 'idle'; this.scrambled = false; this.busy = false;
+    this.movesDone = 0; this.totalMoves = 0; this.solveProgress = 1;
+    if (!silent) {
+      this.resetLanes();
+      this.ui.count.style.display = 'none';
+      this.ui.move.style.display = 'none';
+      this.setSolvedPct(1);
+      this.ui.status.textContent = 'Solved — scramble to begin';
+      this.ui.solCount.textContent = '—';
+      this.ui.solChips.innerHTML = '<span style="font-size:12.5px;color:#B7B3AA;">Solve a scramble to see the winning path.</span>';
+      this.syncControls();
+    }
+  }
+
+  onPhaseComplete() {
+    this.ui.move.style.display = 'none';
+    if (this.phase === 'scrambling') {
+      this.phase = 'idle'; this.busy = false;
+      this.ui.status.textContent = 'Scrambled — ready to solve';
+      this.setSolvedPct(this.mode === 'texture' ? 0 : 0.04);
+      this.ui.count.style.display = 'none';
+    } else if (this.phase === 'solving') {
+      this.phase = 'idle'; this.busy = false; this.scrambled = false; this.hasSolution = true;
+      this.setSolvedPct(1);
+      this.ui.status.textContent = 'Solved ✓';
+      this.ui.count.style.display = 'none';
+      this.finishLanes();
+      this.showSolution();
+    }
+    this.syncControls();
+  }
+
+  // ---- HUD ----
+  setSolvedPct(f) {
+    f = Math.max(0, Math.min(1, f));
+    this.ui.ring.setAttribute('stroke-dashoffset', this.ringCirc * (1 - f));
+    this.ui.pct.textContent = Math.round(f * 100);
+    if (this.ui.progress) this.ui.progress.style.width = (f * 100) + '%';
+  }
+
+  notation(m) {
+    const N = this.N;
+    const outer = m.layer === N - 1, inner0 = m.layer === 0;
+    const L = ['x','y','z'][m.axis];
+    let ch;
+    if (m.axis === 0) ch = outer ? 'R' : inner0 ? 'L' : `${m.layer}r`;
+    else if (m.axis === 1) ch = outer ? 'U' : inner0 ? 'D' : `${m.layer}u`;
+    else ch = outer ? 'F' : inner0 ? 'B' : `${m.layer}f`;
+    return ch + (m.dir < 0 ? "'" : '');
+  }
+
+  updateHUD() {
+    const partial = this.activeMove ? Math.min(this.activeMove.t / this.activeMove.dur, 1) : 0;
+    const frac = this.totalMoves ? (this.movesDone + partial) / this.totalMoves : 0;
+    if (this.phase === 'scrambling') {
+      this.setSolvedPct(1 - frac);
+      this.ui.count.textContent = `${this.movesDone} / ${this.totalMoves}`;
+      const cur = this.queue[0] || this.activeMove?.m;
+      if (cur) { this.ui.status.textContent = 'Scrambling'; this.ui.move.textContent = this.notation(cur); this.ui.move.style.display = 'inline-block'; }
+    } else if (this.phase === 'solving') {
+      this.solveProgress = frac;
+      this.setSolvedPct(frac);
+      this.ui.count.textContent = `${this.movesDone} / ${this.totalMoves}`;
+      this.updateLanes(frac);
+      const cur = this.queue[0] || this.activeMove?.m;
+      if (cur) { this.ui.status.textContent = 'Solving'; this.ui.move.textContent = this.notation(cur); this.ui.move.style.display = 'inline-block'; }
+    }
+  }
+
+  // ---- lanes ----
+  resetLanes() {
+    Object.values(this.lanes).forEach(l => {
+      l.fill.style.width = '0%'; l.pct.textContent = '0%'; l.stat.textContent = 'idle';
+      l.star.style.display = 'none'; l.pct.style.color = '#A6A299';
+    });
+  }
+  startLanes() {
+    this.resetLanes();
+    Object.values(this.lanes).forEach(l => l.stat.textContent = 'searching…');
+  }
+  updateLanes(f) {
+    const small = this.n <= 4;
+    const curves = small ? { det: 0.62, beam: 1.05, evo: 1.5 } : { det: 1.6, beam: 1.1, evo: 0.66 };
+    const nodes = Math.round(f * (small ? 41000 : 268000));
+    [['det',5800],['beam',3100],['evo',9400]].forEach(([k, mul]) => {
+      const w = Math.min(1, Math.pow(f, curves[k]));
+      const l = this.lanes[k];
+      l.fill.style.width = (w * 100).toFixed(1) + '%';
+      l.pct.textContent = Math.round(w * 100) + '%';
+      l.stat.textContent = `${(nodes * (mul/5800)).toFixed(0)} nodes · gen ${Math.round(f * (k==='evo'?180:40))}`;
+    });
+  }
+  finishLanes() {
+    const small = this.n <= 4;
+    const winner = small ? 'det' : 'evo';
+    const moves = this.lastSolution.length;
+    Object.entries(this.lanes).forEach(([k, l]) => {
+      if (k === winner) {
+        l.fill.style.width = '100%'; l.pct.textContent = '100%'; l.pct.style.color = '#1BA64B';
+        l.stat.textContent = `verified · ${moves} moves`; l.star.style.display = 'inline';
+      } else {
+        const w = 82 + Math.random() * 12;
+        l.fill.style.width = w.toFixed(0) + '%'; l.pct.textContent = w.toFixed(0) + '%';
+        l.stat.textContent = 'budget exhausted';
+      }
+    });
+  }
+
+  showSolution() {
+    if (this.mode === 'texture') {
+      this.ui.solCount.textContent = this.totalMoves.toLocaleString();
+      this.ui.solChips.innerHTML = '<span style="font-size:12px;color:#8C887F;line-height:1.5;">Reduction method — centers → edge pairing → reduced 3×3 + parity. ≈' + this.totalMoves.toLocaleString() + ' moves (O(N²)), too many to list.</span>';
+      return;
+    }
+    const moves = this.lastSolution;
+    this.ui.solCount.textContent = moves.length;
+    this.ui.solChips.innerHTML = '';
+    moves.forEach(m => {
+      const s = document.createElement('span');
+      s.textContent = this.notation(m);
+      s.style.cssText = "font-family:'JetBrains Mono',monospace;font-size:11.5px;padding:3px 7px;background:#F4F3EF;border-radius:6px;color:#3a3933;";
+      this.ui.solChips.appendChild(s);
+    });
+  }
+
+  copyPath() {
+    const txt = this.lastSolution.map(m => this.notation(m)).join(' ');
+    if (txt && navigator.clipboard) {
+      navigator.clipboard.writeText(txt);
+      const btn = this.q('[data-copy]');
+      const o = btn.innerHTML;
+      btn.innerHTML = '<span style="font-size:12px;color:#1BA64B;">Copied ✓</span>';
+      setTimeout(() => btn.innerHTML = o, 1200);
+    }
+  }
+
+  // ---- controls / settings ----
+  setView(v) {
+    this.view = v;
+    this.ui.studio.style.display = v === 'studio' ? 'flex' : 'none';
+    this.ui.swarmView.style.display = v === 'swarm' ? 'flex' : 'none';
+    if (v === 'studio') setTimeout(() => this.resize(), 30);
+    this.syncControls();
+  }
+  setN(n) {
+    if (this.busy) return;
+    n = Math.max(2, Math.min(2000, n));
+    if (n === this.n) return;
+    this.n = n;
+    this.resetSolved();
+  }
+  setSpeed(s) {
+    this.speedDur = s === 'slow' ? 0.9 : s === 'fast' ? 0.26 : 0.52;
+    this.speed = s; this.syncControls();
+  }
+  setSwarmCount(c) { this.swarmCount = c; this.initSwarm(); this.syncControls(); }
+
+  syncControls() {
+    // view toggle
+    this.qa('[data-view]').forEach(b => {
+      const on = b.dataset.view === this.view;
+      b.style.background = on ? '#fff' : 'transparent';
+      b.style.color = on ? '#161514' : '#8C887F';
+      b.style.boxShadow = on ? '0 1px 3px rgba(20,20,18,.12)' : 'none';
+    });
+    // N presets
+    this.qa('[data-n]').forEach(b => {
+      const on = parseInt(b.dataset.n, 10) === this.n;
+      b.style.background = on ? '#161514' : '#F4F3EF';
+      b.style.color = on ? '#fff' : '#6E6A61';
+    });
+    const nsl = this.q('[data-nslider]'); if (nsl) nsl.value = Math.min(this.n, 50);
+    const nv = this.q('[data-nval]'); if (nv) nv.textContent = `${this.n}×${this.n}`;
+    // speed
+    this.qa('[data-speed]').forEach(b => {
+      const on = b.dataset.speed === (this.speed || 'normal');
+      b.style.background = on ? '#fff' : 'transparent';
+      b.style.color = on ? '#161514' : '#8C887F';
+      b.style.boxShadow = on ? '0 1px 3px rgba(20,20,18,.1)' : 'none';
+    });
+    // swarm count + speed
+    this.qa('[data-count]').forEach(b => {
+      const on = parseInt(b.dataset.count, 10) === this.swarmCount;
+      b.style.background = on ? '#fff' : 'transparent';
+      b.style.color = on ? '#161514' : '#8C887F';
+      b.style.boxShadow = on ? '0 1px 3px rgba(20,20,18,.1)' : 'none';
+    });
+    this.qa('[data-sspeed]').forEach(b => {
+      const on = (b.dataset.sspeed === 'lively') === (this.swarmSpeed > 1.5);
+      b.style.background = on ? '#fff' : 'transparent';
+      b.style.color = on ? '#161514' : '#8C887F';
+      b.style.boxShadow = on ? '0 1px 3px rgba(20,20,18,.1)' : 'none';
+    });
+    // spin toggle
+    const spin = this.q('[data-spin]');
+    spin.style.color = this.autoSpin ? '#161514' : '#B7B3AA';
+    // buttons enable
+    const dis = (el, off) => { if (!el) return; el.style.opacity = off ? '.4' : '1'; el.style.pointerEvents = off ? 'none' : 'auto'; };
+    dis(this.q('[data-act-scramble]'), this.busy);
+    dis(this.q('[data-act-solve]'), this.busy || !this.scrambled);
+    dis(this.q('[data-act-replay]'), this.busy || this.lastScramble.length === 0);
+    dis(this.q('[data-act-reset]'), this.busy);
+    this.qa('[data-n],[data-inc],[data-dec]').forEach(b => dis(b, this.busy));
+  }
+
+  // =================== SWARM ===================
+  initSwarm() {
+    const grid = this.ui.swarmGrid;
+    grid.innerHTML = '';
+    this.cards = [];
+    const faces = this.faceList;
+    const faces6 = [this.PAL.w, this.PAL.g, this.PAL.r, this.PAL.b, this.PAL.o, this.PAL.y]; // top,front,right,back,left,bottom
+    for (let i = 0; i < this.swarmCount; i++) {
+      const card = document.createElement('div');
+      card.style.cssText = 'position:relative;height:154px;background:#fff;border:1px solid #ECEAE4;border-radius:16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;box-shadow:0 1px 2px rgba(20,20,18,.03);overflow:hidden;transition:box-shadow .3s,border-color .3s;';
+      const ringSize = 90, rr = 39, circ = 2 * Math.PI * rr;
+      const cellsHtml = () => {
+        let h = '';
+        for (let k = 0; k < 9; k++) h += '<div data-cell style="border-radius:3px;background:#1a1c20;"></div>';
+        return h;
+      };
+      const fs = (extra) => `position:absolute;width:38px;height:38px;left:16px;top:16px;display:grid;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px;background:#0a0b0d;border-radius:5px;backface-visibility:hidden;${extra}`;
+      card.innerHTML = `
+        <div style="position:relative;width:${ringSize}px;height:${ringSize}px;display:flex;align-items:center;justify-content:center;">
+          <svg width="${ringSize}" height="${ringSize}" viewBox="0 0 ${ringSize} ${ringSize}" style="position:absolute;inset:0;">
+            <circle cx="${ringSize/2}" cy="${ringSize/2}" r="${rr}" stroke="#EFEDE7" stroke-width="4" fill="none"/>
+            <circle data-cring cx="${ringSize/2}" cy="${ringSize/2}" r="${rr}" stroke="${this.accent}" stroke-width="4" fill="none" stroke-linecap="round" stroke-dasharray="${circ}" stroke-dashoffset="${circ}" transform="rotate(-90 ${ringSize/2} ${ringSize/2})"/>
+          </svg>
+          <div style="perspective:260px;width:70px;height:70px;">
+            <div data-inner style="position:relative;width:70px;height:70px;transform-style:preserve-3d;transform:rotateX(-20deg) rotateY(-37deg);">
+              <div style="${fs('transform:rotateX(90deg) translateZ(19px);')}">${cellsHtml()}</div>
+              <div style="${fs('transform:translateZ(19px);')}">${cellsHtml()}</div>
+              <div style="${fs('transform:rotateY(90deg) translateZ(19px);')}">${cellsHtml()}</div>
+              <div style="${fs('transform:rotateY(180deg) translateZ(19px);')}">${cellsHtml()}</div>
+              <div style="${fs('transform:rotateY(-90deg) translateZ(19px);')}">${cellsHtml()}</div>
+              <div style="${fs('transform:rotateX(-90deg) translateZ(19px);')}">${cellsHtml()}</div>
+            </div>
+          </div>
+          <div data-check style="position:absolute;right:6px;top:6px;width:18px;height:18px;border-radius:50%;background:#00A24B;display:none;align-items:center;justify-content:center;color:#fff;font-size:11px;">✓</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:10.5px;color:#A6A299;font-family:'JetBrains Mono',monospace;">
+          <span>#${String(i + 1).padStart(2, '0')}</span>
+          <span data-cnt style="color:#C7C3BA;">54 off</span>
+        </div>`;
+      grid.appendChild(card);
+      const cellEls = Array.from(card.querySelectorAll('[data-cell]'));
+      const solvedCol = cellEls.map((_, k) => faces6[Math.floor(k / 9)]);
+      const cardObj = {
+        card, inner: card.querySelector('[data-inner]'), cring: card.querySelector('[data-cring]'), check: card.querySelector('[data-check]'),
+        cnt: card.querySelector('[data-cnt]'), cells: cellEls, solvedCol, circ,
+        prog: 0, applied: -1, speed: 0.16 + Math.random() * 0.24, delay: Math.random() * 2.4,
+        order: this.shuffle([...Array(54).keys()]), state: 'run', restT: 0, scr: [],
+        rot: Math.random() * 360, spin: 9 + Math.random() * 15,
+      };
+      this.rescr(cardObj);
+      this.cards.push(cardObj);
+    }
+    this.cumulativeSolves = 0;
+    this.swarmFrame = 0;
+  }
+
+  shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1));[a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+  rescr(c) {
+    c.scr = c.cells.map(() => this.faceList[Math.floor(Math.random() * 6)]);
+    c.cells.forEach((el, k) => el.style.background = c.scr[k]);
+    c.applied = 0;
+  }
+
+  updateSwarm(dt) {
+    let solvingNow = 0, progSum = 0;
+    const g = this.swarmSpeed;
+    for (const c of this.cards) {
+      c.rot += dt * c.spin;
+      if (c.inner) c.inner.style.transform = `rotateX(-20deg) rotateY(${c.rot}deg)`;
+      if (c.delay > 0) { c.delay -= dt; solvingNow++; continue; }
+      if (c.state === 'run') {
+        solvingNow++;
+        c.prog = Math.min(1, c.prog + dt * c.speed * g);
+        const target = Math.floor(c.prog * 54);
+        while (c.applied < target) {
+          const idx = c.order[c.applied];
+          if (c.cells[idx]) c.cells[idx].style.background = c.solvedCol[idx];
+          c.applied++;
+        }
+        c.cring.style.strokeDashoffset = c.circ * (1 - c.prog);
+        const off = 54 - c.applied;
+        c.cnt.textContent = off + ' off';
+        if (c.prog >= 1) {
+          c.state = 'rest'; c.restT = 0;
+          c.cring.style.stroke = '#00A24B'; c.check.style.display = 'flex';
+          c.cnt.textContent = 'solved'; c.cnt.style.color = '#1BA64B';
+          c.card.style.borderColor = '#CDEAD4'; c.card.style.boxShadow = '0 4px 16px -6px rgba(27,166,75,.4)';
+          c.check.style.animation = 'pop .4s ease';
+          this.cumulativeSolves++;
+        }
+      } else {
+        c.restT += dt;
+        if (c.restT > 1.1 + Math.random()) {
+          c.state = 'run'; c.prog = 0; c.applied = 0;
+          c.order = this.shuffle([...Array(54).keys()]);
+          c.speed = 0.18 + Math.random() * 0.28;
+          c.cring.style.stroke = this.accent; c.cring.style.strokeDashoffset = c.circ;
+          c.check.style.display = 'none'; c.check.style.animation = '';
+          c.cnt.style.color = '#C7C3BA';
+          c.card.style.borderColor = '#ECEAE4'; c.card.style.boxShadow = '0 1px 2px rgba(20,20,18,.03)';
+          this.rescr(c);
+        }
+      }
+      progSum += c.prog;
+    }
+    // header stats throttled
+    this.swarmFrame = (this.swarmFrame || 0) + 1;
+    if (this.swarmFrame % 4 === 0) {
+      const total = this.q('[data-swarm-total]'); if (total) total.textContent = this.cumulativeSolves.toLocaleString();
+      const run = this.q('[data-swarm-run]'); if (run) run.textContent = solvingNow;
+      const avg = this.q('[data-swarm-avg]'); if (avg) avg.textContent = Math.round((progSum / Math.max(1, this.cards.length)) * 100) + '%';
+    }
+  }
+
+  // =================== LOOP ===================
+  loop() {
+    const T = window.THREE;
+    const tick = () => {
+      this._raf = requestAnimationFrame(tick);
+      const dt = Math.min(this.clock.getDelta(), 0.05);
+
+      // move animation
+      if (this.mode === 'texture') {
+        if (this.busy) this.advanceTexture(dt);
+      } else if (this.activeMove) {
+        const a = this.activeMove;
+        a.t += dt;
+        const p = Math.min(a.t / a.dur, 1);
+        const e = 1 - Math.pow(1 - p, 3);
+        a.pivot.rotation[a.axisName] = a.m.dir * (Math.PI / 2) * e;
+        if (a.t >= a.dur) { this.finalizeMove(); this.movesDone++; this.updateHUD(); }
+        else this.updateHUD();
+      } else if (this.queue.length) {
+        this.startMove(this.queue.shift());
+      } else if (this.busy) {
+        this.onPhaseComplete();
+      }
+
+      // idle auto-orbit + momentum
+      if (this.view === 'studio') {
+        if (!this.dragging) {
+          if (Math.abs(this.vel.x) > 0.0001 || Math.abs(this.vel.y) > 0.0001) {
+            this.applyOrbit(this.vel.x * 0.9, this.vel.y * 0.9);
+            this.vel.x *= 0.9; this.vel.y *= 0.9;
+          } else if (this.autoSpin && !this.activeMove && !this.scrambled) {
+            this.cubeGroup.rotation.y += 0.0024;
+          }
+        }
+        this.renderer.render(this.scene, this.camera);
+      } else if (this.view === 'swarm') {
+        this.updateSwarm(dt);
+      }
+    };
+    tick();
+  }
+
+  componentWillUnmount() {
+    if (this._raf) cancelAnimationFrame(this._raf);
+    if (this.ro) this.ro.disconnect();
+    if (this.onKey) window.removeEventListener('keydown', this.onKey);
+  }
+}
+
+
+  // ===== wire the real Rust solver (WASM) into the design =====
+  function wireRealSolver(inst){
+    const KEYS = { deterministic:'det', beam:'beam', evolution:'evo' };
+    const origScramble = inst.scramble.bind(inst);
+    const origSolve = inst.solve.bind(inst);
+    const origReset = inst.resetSolved ? inst.resetSolved.bind(inst) : null;
+    const origSetN = inst.setN ? inst.setN.bind(inst) : null;
+
+    inst.scrambleDepth = 6;
+    const sd = inst.root.querySelector('[data-scramble]'); if (sd) sd.value = 6;
+    const sdv = inst.root.querySelector('[data-scramble-val]'); if (sdv) sdv.textContent = '6';
+
+    function lanesUpdate(self, lanes, winnerKey, moves){
+      ['det','beam','evo'].forEach(k=>{
+        const el = self.root.querySelector('[data-lane="'+k+'"]'); if(!el) return;
+        const st = el.querySelector('[data-star]'); if(st) st.style.display='none';
+      });
+      (lanes||[]).forEach(L=>{
+        const k = KEYS[L.id]; if(!k) return;
+        const el = self.root.querySelector('[data-lane="'+k+'"]'); if(!el) return;
+        const fill=el.querySelector('[data-fill]'), pct=el.querySelector('[data-pct2]'),
+              stat=el.querySelector('[data-stat]'), star=el.querySelector('[data-star]');
+        const isWin = (k===winnerKey);
+        const p = isWin?100:Math.max(0,Math.min(100,(L.pct|0)));
+        if(fill) fill.style.width = p+'%';
+        if(pct){ pct.textContent = p+'%'; pct.style.color = (L.solved||isWin)?'#1BA64B':''; }
+        if(stat) stat.textContent = isWin ? ('verified · '+moves+' moves') : (L.solved?'solved':(L.label||'searching…'));
+        if(star) star.style.display = isWin ? 'inline' : 'none';
+      });
+    }
+
+    if (origReset) inst.resetSolved = function(anim){
+      origReset(anim);
+      if (this.lab){ this.lab.set_size(this.n); this.lab.reset(); }
+    };
+    if (origSetN) inst.setN = function(n){
+      origSetN(n);
+      this.lastScramble = [];   // a new N invalidates the old scramble's layers
+      if (this.lab){ this.lab.set_size(this.n); this.lab.reset(); }
+      if (this._refreshSolvability) this._refreshSolvability(this);
+    };
+
+    inst.scramble = function(){
+      if (this.busy) return;
+      if (this.mode !== 'cubie') return origScramble();   // huge (texture) cubes: design path
+      this.resetSolved(true);
+      const N = this.n, depth = this.scrambleDepth;
+      // 2×2/3×3 can be inverted by the real (outer-move) solver, so scramble with
+      // outer faces only. Bigger cubes can't be solved by search anyway, so mix
+      // EVERY layer for a proper-looking full scramble (visual).
+      const solvable = (N <= 3) && !!this.lab;
+      this.lastScramble = [];
+      let prev = -1;
+      for (let i=0;i<depth;i++){
+        let axis;
+        do { axis = (Math.random()*3)|0; } while (axis===prev && Math.random()<0.55);
+        prev = axis;
+        const layer = solvable ? (Math.random()<0.5 ? 0 : N-1) : (Math.random()*N)|0;
+        const dir = Math.random()<0.5 ? 1 : -1;
+        this.lastScramble.push({axis, layer, dir});
+      }
+      // Apply the whole scramble instantly — fast at any depth, no stuck queue.
+      for (const m of this.lastScramble) this.applyInstant(m);
+      // Mirror into the solver's cube only when it can actually invert it (N<=3).
+      if (solvable){ this.lab.reset(); for (const m of this.lastScramble) this.lab.apply_design_move(m.axis, m.layer, m.dir); }
+      this.queue = []; this.activeMove = null;
+      this.movesDone = depth; this.totalMoves = depth;
+      this.phase = 'idle'; this.busy = false; this.scrambled = true;
+      if (this.resetLanes) this.resetLanes();
+      if (this.ui && this.ui.status) this.ui.status.textContent = 'Scrambled — ready to solve';
+      if (this.ui && this.ui.count) this.ui.count.style.display = 'none';
+      if (this.ui && this.ui.move) this.ui.move.style.display = 'none';
+      if (this.syncControls) this.syncControls();
+    };
+
+    // Mark all race lanes as a visual playback (no real search happened).
+    function setLanesVisual(self){
+      ['det','beam','evo'].forEach(function(k){
+        var el = self.root.querySelector('[data-lane="'+k+'"]'); if(!el) return;
+        var fill=el.querySelector('[data-fill]'), pct=el.querySelector('[data-pct2]'),
+            stat=el.querySelector('[data-stat]'), star=el.querySelector('[data-star]');
+        if(fill) fill.style.width='0%';
+        if(pct){ pct.textContent=''; pct.style.color=''; }
+        if(stat) stat.textContent='visual playback — not searched';
+        if(star) star.style.display='none';
+      });
+    }
+
+    inst.finishLanes = function(){
+      if (this._visualSolve){ setLanesVisual(this); return; }
+      const winnerKey = KEYS[this.realWinner] || 'det';
+      lanesUpdate(this, this.realLanes || [], winnerKey, (this.lastSolution||[]).length);
+    };
+
+    inst.solve = function(){
+      if (this.mode !== 'cubie') return origSolve();   // texture (huge) cubes: design path
+      if (!this.scrambled || this.busy || this._solvePending) return;
+      // Visual-only cubes (N>3): animate the inverse with HONEST lanes — no real
+      // search. Queue is filled synchronously so the loop never finishes early.
+      if (this.n > 3 || !this.lab){
+        var inv = this.lastScramble.slice().reverse().map(function(m){ return {axis:m.axis, layer:m.layer, dir:-m.dir}; });
+        this.lastSolution = inv;
+        this.queue = inv.slice();
+        this.movesDone = 0; this.totalMoves = inv.length;
+        this._visualSolve = true;
+        this.phase = 'solving'; this.busy = true;
+        if (this.resetLanes) this.resetLanes();
+        setLanesVisual(this);
+        if (this.ui && this.ui.status) this.ui.status.textContent = 'Playing solution…';
+        if (this.ui && this.ui.count) this.ui.count.style.display = 'inline-block';
+        if (this.syncControls) this.syncControls();
+        return;
+      }
+      // Real solve (2×2/3×3): block re-entry with a PENDING flag — not busy — so
+      // the rAF loop can't fire onPhaseComplete() on the still-empty queue.
+      this._visualSolve = false;
+      this._solvePending = true;
+      if (this.ui && this.ui.status) this.ui.status.textContent = 'Solving…';
+      if (this.startLanes) this.startLanes();
+      if (this.syncControls) this.syncControls();
+      setTimeout(()=>{
+        this._solvePending = false;
+        let res;
+        try { res = JSON.parse(this.lab.solve(Math.min(this.scrambleDepth||6, 9), 5000)); }
+        catch(e){ console.warn('solve error', e); res = {found:false, lanes:[]}; }
+        this.realLanes = res.lanes || [];
+        if (!res.found || !res.moves || !res.moves.length){
+          if (this.ui && this.ui.status) this.ui.status.textContent = 'No verified solution within budget — lower the scramble depth';
+          lanesUpdate(this, res.lanes || [], null, 0);
+          if (this.syncControls) this.syncControls();
+          return;
+        }
+        this.realWinner = res.winner;
+        this.lastSolution = res.moves;
+        updateProof(this, (this.lastScramble||[]).length, res.moveCount);
+        this.queue = res.moves.slice();   // fill the queue BEFORE claiming busy
+        this.movesDone = 0; this.totalMoves = this.queue.length;
+        this.phase = 'solving'; this.busy = true;
+        if (this.ui && this.ui.count) this.ui.count.style.display = 'inline-block';
+        if (this.syncControls) this.syncControls();
+      }, 30);
+    };
+
+    // During a visual-only solve there's no real search — don't animate the
+    // fabricated node/generation telemetry the design shows per frame.
+    var origUpdateLanes = inst.updateLanes ? inst.updateLanes.bind(inst) : null;
+    if (origUpdateLanes) inst.updateLanes = function(f){
+      if (this._visualSolve){ setLanesVisual(this); return; }
+      return origUpdateLanes(f);
+    };
+
+    // ---- real evolutionary swarm: each card is a live learning trial ----
+    var SWPAL = [inst.PAL.w, inst.PAL.y, inst.PAL.g, inst.PAL.b, inst.PAL.o, inst.PAL.r];
+    var FACE_FOR_CARD = [0,2,5,3,4,1]; // card faces [U,F,R,B,L,D] -> wasm [Up,Down,Front,Back,Left,Right]
+    var origInitSwarm = inst.initSwarm ? inst.initSwarm.bind(inst) : null;
+    var origUpdateSwarm = inst.updateSwarm ? inst.updateSwarm.bind(inst) : null;
+
+    function swarmKey(self){ return (self.n||3)+':'+JSON.stringify(self.lastScramble||[]); }
+    var SWARM_MAX = 3;   // search/evolution only genuinely solves 2×2 / 3×3
+    function makeSwarm(self){
+      try {
+        if ((self.n||3) > SWARM_MAX){ self.swarmLab = null; self._swarmKey = swarmKey(self); return; }
+        var cnt = (self.cards||[]).length||16;
+        var ls = self.lastScramble || [];
+        self.swarmLab = new Swarm(cnt, self.n||3, Math.max(3, self.scrambleDepth||6), BigInt((Math.random()*1e9)|0)+1n);
+        // Always seed the swarm from the EXACT Studio cube. Empty scramble (a
+        // solved Studio) → solved base, so the wall mirrors the on-screen cube.
+        self.swarmLab.set_scramble(
+          Uint8Array.from(ls.map(function(m){return m.axis;})),
+          Uint32Array.from(ls.map(function(m){return m.layer;})),
+          Int32Array.from(ls.map(function(m){return m.dir;})));
+        self.swarmShared = ls.length > 0;
+        self._swarmKey = swarmKey(self);
+        self._swAccum=0; self._swPainted=false;
+      } catch(e){ console.warn('swarm init failed', e); self.swarmLab=null; }
+    }
+
+    if (origInitSwarm) inst.initSwarm = function(){
+      origInitSwarm();
+      this.cumulativeSolves = 0;
+      makeSwarm(this);
+    };
+
+    if (origUpdateSwarm) inst.updateSwarm = function(dt){
+      if (!this.cards || !this.cards.length) return;
+      var grid = this.root.querySelector('[data-swarm]');
+      var msg = this.root.querySelector('[data-swarm-msg]');
+      var liveEl = this.root.querySelector('[data-swarm-live]');
+      // Remember the grid's real display value so we can restore it (don't blank it).
+      if (grid && this._gridDisp === undefined) this._gridDisp = grid.style.display || 'grid';
+      // Bigger cubes aren't solvable by search/evolution — explain instead of stalling.
+      if ((this.n||3) > SWARM_MAX){
+        this.swarmLab = null;
+        if (grid) grid.style.display = 'none';
+        if (liveEl) liveEl.textContent = '';
+        if (msg){
+          msg.style.display = 'block';
+          msg.innerHTML = 'The evolutionary swarm races to solve the cube the engines can actually crack — the <b>3×3</b> (and 2×2). A <b>' + this.n + '×' + this.n + '</b> cube is beyond any search or evolutionary solver. Set Studio to <b>3×3</b> to watch the whole wall learn to solve your cube.';
+        }
+        return;
+      }
+      if (grid) grid.style.display = this._gridDisp;
+      if (msg) msg.style.display = 'none';
+      // Always track the Studio cube: rebuild whenever its scramble (or N) changes.
+      if (!this.swarmLab) makeSwarm(this);
+      else if (this._swarmKey !== swarmKey(this)) makeSwarm(this);
+      if (liveEl){
+        liveEl.textContent = this.swarmShared
+          ? ('Tracking your Studio cube — ' + this.n + '×' + this.n + ', ' + (this.lastScramble||[]).length + '-move scramble')
+          : 'Studio cube is solved — scramble it to watch the swarm learn to solve it';
+      }
+      if (!this.swarmLab) return origUpdateSwarm(dt);
+      try {
+        var g = this.swarmSpeed || 1;
+        this._swAccum = (this._swAccum||0) + dt * g * 100;
+        var steps=0; while (this._swAccum >= 1 && steps < 24){ this.swarmLab.step(); this._swAccum -= 1; steps++; }
+        // Spin every frame (cheap); only re-read the WASM buffer and repaint the
+        // 54 stickers when the population actually advanced (or on first paint).
+        var repaint = steps > 0 || !this._swPainted;
+        var buf = repaint ? this.swarmLab.render() : null;
+        var N = Math.min(this.cards.length, this.swarmLab.member_count());
+        for (var i=0;i<N;i++){
+          var c = this.cards[i];
+          c.rot += dt * c.spin; if (c.inner) c.inner.style.transform = 'rotateX(-20deg) rotateY('+c.rot+'deg)';
+          if (!repaint) continue;
+          var b = i*55, pct = buf[b];
+          for (var k=0;k<54;k++){
+            var cf=(k/9)|0, cell=k%9, wf=FACE_FOR_CARD[cf];
+            var ci = buf[b + 1 + wf*9 + cell];
+            if (c.cells[k]) c.cells[k].style.background = SWPAL[ci] || SWPAL[0];
+          }
+          c.cring.style.strokeDashoffset = c.circ * (1 - pct/100);
+          if (pct >= 100){
+            c.cring.style.stroke = '#00A24B'; c.check.style.display='flex';
+            c.cnt.textContent='solved'; c.cnt.style.color='#1BA64B';
+            c.card.style.borderColor='#CDEAD4'; c.card.style.boxShadow='0 4px 16px -6px rgba(27,166,75,.4)';
+          } else {
+            c.cring.style.stroke = this.accent; c.check.style.display='none';
+            c.cnt.textContent = Math.round(54*(1-pct/100)) + ' off'; c.cnt.style.color='#C7C3BA';
+            c.card.style.borderColor='#ECEAE4'; c.card.style.boxShadow='0 1px 2px rgba(20,20,18,.03)';
+          }
+        }
+        if (repaint){
+          this._swPainted = true;
+          var t=this.q('[data-swarm-total]'); if(t) t.textContent = this.swarmLab.converged().toLocaleString();
+          var r=this.q('[data-swarm-run]'); if(r) r.textContent = this.swarmLab.solving_now();
+          var a=this.q('[data-swarm-avg]'); if(a) a.textContent = Math.round(this.swarmLab.avg_progress()*100)+'%';
+        }
+      } catch(e){ console.warn('swarm update failed', e); this.swarmLab = null; }
+    };
+
+    function updateProof(self, scrambleLen, solutionLen){
+      var p = self.root.querySelector('[data-proof]'); var body = self.root.querySelector('[data-proof-body]');
+      if (!p || !body) return;
+      var cmp = (solutionLen < scrambleLen)
+        ? ('<b>'+solutionLen+' moves</b> — shorter than the '+scrambleLen+'-move scramble, so it cannot be replaying it.')
+        : ('<b>'+solutionLen+' moves</b> from the state alone — a fresh, verified path, not the scramble inverse.');
+      body.innerHTML = 'The '+scrambleLen+'-move scramble was applied, then discarded. The solver was given only the cube state (54 sticker colours) and searched for its own path: '+cmp;
+      p.style.display='block';
+    }
+
+    function wireExplanations(self){
+      var chips = self.root.querySelector('[data-sol-chips]');
+      if (chips && !self.root.querySelector('[data-proof]')){
+        var p = document.createElement('div'); p.setAttribute('data-proof','');
+        p.style.cssText = 'display:none;margin:2px 0 12px;padding:11px 13px;background:#F4F8F3;border:1px solid #E0EBDB;border-radius:12px;';
+        p.innerHTML = '<div style="display:flex;align-items:center;gap:7px;font-size:10px;font-weight:600;letter-spacing:.07em;color:#4E8A4A;margin-bottom:6px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>SCRAMBLE HIDDEN FROM SOLVER</div><div data-proof-body style="font-size:12px;color:#5b5f54;line-height:1.5;"></div>';
+        chips.parentNode.insertBefore(p, chips);
+      }
+      self.root.querySelectorAll('span').forEach(function(s){
+        if (s.textContent && s.textContent.trim()==='3 strategies, in parallel'){
+          s.textContent = '3 strategies on the cube state — none see the scramble';
+        }
+      });
+      var DESC = { det:'Searches forward from the scrambled state and backward from solved until the paths meet — exact & shortest.',
+                   beam:'Keeps the handful of partial solutions closest to solved at each step.',
+                   evo:'Evolves a population of move sequences — fittest survive, recombine, and mutate.' };
+      ['det','beam','evo'].forEach(function(k){
+        var el = self.root.querySelector('[data-lane="'+k+'"]'); if(!el) return;
+        el.setAttribute('title', DESC[k]);
+        if (!el.querySelector('[data-lane-desc]') && el.firstElementChild){
+          var d = document.createElement('div'); d.setAttribute('data-lane-desc','');
+          d.style.cssText='font-size:10px;color:#B7B3AA;margin:-2px 0 7px;line-height:1.35;';
+          d.textContent = DESC[k];
+          el.firstElementChild.insertAdjacentElement('afterend', d);
+        }
+      });
+      var grid = self.root.querySelector('[data-swarm]');
+      if (grid && !self.root.querySelector('[data-swarm-note]')){
+        var note = document.createElement('div'); note.setAttribute('data-swarm-note','');
+        note.style.cssText='font-size:12px;color:#7d7a72;line-height:1.55;margin:0 2px 14px;max-width:780px;';
+        note.innerHTML = 'Each cell is one <b>trial of the evolutionary solver</b>, and every trial starts as an exact copy of <b>your Studio cube</b>. They mutate and recombine until a trial reaches solved (it turns green, then restarts from the cube). Change the Studio scramble and the whole wall instantly re-syncs to it. The trials see only the cube state, never the scramble.';
+        var live = document.createElement('div'); live.setAttribute('data-swarm-live','');
+        live.style.cssText='font-size:11.5px;font-weight:500;color:#1573E6;margin:0 2px 12px;';
+        live.textContent = 'Tracking your Studio cube';
+        var msg = document.createElement('div'); msg.setAttribute('data-swarm-msg','');
+        msg.style.cssText='display:none;font-size:14px;color:#8C887F;line-height:1.6;background:#F7F6F2;border:1px solid #ECEAE4;border-radius:16px;padding:28px 26px;margin:6px 2px;max-width:720px;';
+        grid.parentNode.insertBefore(note, grid);
+        grid.parentNode.insertBefore(live, grid);
+        grid.parentNode.insertBefore(msg, grid);
+      }
+    }
+    (function(self){
+      // Scramble depth: enough to fully mix any cube, without the absurd range
+      // that made Solve a guessing game. Cube size can still go big (visual).
+      var sd = self.root.querySelector('[data-scramble]'); if (sd){ sd.max = 40; }
+      var ns = self.root.querySelector('[data-nslider]'); if (ns){ ns.max = 2000; }
+      // The Calm/Lively swarm-speed toggle and the swarm count (16/36/…) selector
+      // don't add anything — hide them; the swarm just shows the whole wall.
+      self.root.querySelectorAll('[data-sspeed]').forEach(function(b){ var grp=b.parentElement; if(grp) grp.style.display='none'; });
+      self.root.querySelectorAll('[data-count]').forEach(function(b){ var grp=b.parentElement; if(grp) grp.style.display='none'; });
+    })(inst);
+    wireExplanations(inst);
+
+    // ---------- Solvability guidance: always say what Solve will do ----------
+    var SOLVE_MAX_N = 3, SOLVE_MAX_DEPTH = 9;
+    function refreshSolvability(self){
+      var ban = self.root.querySelector('[data-solvability]'); if(!ban) return;
+      var n = self.n||3, d = self.scrambleDepth||6;
+      if (n > SOLVE_MAX_N){
+        ban.style.cssText = ban._base + 'background:#FBF4E8;color:#9A6A1E;border-color:#F0E0C2;';
+        ban.innerHTML = '<b>'+n+'×'+n+' is visual.</b> Only the 2×2 and 3×3 are solved for real by the engines; bigger cubes scramble fully and Solve plays back a visual demo.';
+      } else if (d > SOLVE_MAX_DEPTH){
+        ban.style.cssText = ban._base + 'background:#FBF4E8;color:#9A6A1E;border-color:#F0E0C2;';
+        ban.innerHTML = '<b>Deep scramble (depth '+d+').</b> The exact solver may run out of budget. Keep depth ≤ '+SOLVE_MAX_DEPTH+' for a guaranteed solve.';
+      } else {
+        ban.style.cssText = ban._base + 'background:#F1F8F0;color:#3F7A3A;border-color:#D9EAD5;';
+        ban.innerHTML = '<b>Ready to solve.</b> Press <b>Scramble</b>, then <b>Solve</b> — the engines below find a verified solution and play it back.';
+      }
+    }
+    inst._refreshSolvability = refreshSolvability;
+    (function(self){
+      var solveBtn = self.root.querySelector('[data-onclick="onSolve"]');
+      if (solveBtn && solveBtn.parentNode && !self.root.querySelector('[data-solvability]')){
+        var ban = document.createElement('div'); ban.setAttribute('data-solvability','');
+        ban._base = 'font-size:12px;line-height:1.5;border:1px solid;border-radius:12px;padding:10px 12px;margin:0 0 12px;';
+        solveBtn.parentNode.insertBefore(ban, solveBtn);
+      }
+      ['4','5','7','20','50','100','500','1000'].forEach(function(v){
+        var b = self.root.querySelector('[data-n="'+v+'"]');
+        if(b){ b.style.opacity='0.5'; b.title='Visual only — solved for real on 2×2 and 3×3'; }
+      });
+      var sd2 = self.root.querySelector('[data-scramble]');
+      if (sd2) sd2.addEventListener('input', function(){ setTimeout(function(){ refreshSolvability(self); }, 0); });
+      refreshSolvability(self);
+    })(inst);
+  }
+
+  function markLive(){
+    // Remove the corner status pill entirely (the design's "Simulated demo" badge).
+    document.querySelectorAll('span').forEach(s=>{
+      if (s.textContent && s.textContent.trim() === 'Simulated demo'){
+        s.style.display = 'none';
+      }
+    });
+  }
+
+
+  function bindAndMount(){
+    const props = { autoSpin: true, accent: '#161514', palette: 'Classic' };
+    const inst = new Component(props);
+    const vals = inst.renderVals ? inst.renderVals() : {};
+    document.querySelectorAll('[data-dcref]').forEach(el => {
+      const fn = vals[el.getAttribute('data-dcref')];
+      if (typeof fn === 'function') fn(el);
+    });
+    const evmap = { 'data-onclick':'click', 'data-onchange':'input' };
+    Object.keys(evmap).forEach(attr => {
+      document.querySelectorAll('['+attr+']').forEach(el => {
+        const fn = vals[el.getAttribute(attr)];
+        if (typeof fn === 'function') el.addEventListener(evmap[attr], fn);
+      });
+    });
+    if (typeof inst.componentDidMount === 'function') inst.componentDidMount();
+    return inst;
+  }
+  async function boot(){
+    const inst = bindAndMount();
+    window.__cubeLab = inst;
+    try {
+      await init();
+      inst.lab = new CubeLab(inst.n);
+      wireRealSolver(inst);
+      markLive();
+    } catch (e){
+      console.warn('WASM failed to load — running the simulated demo.', e);
+    }
+  }
+  boot();
+
+</script>
+</body>
+</html>

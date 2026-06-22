@@ -4,7 +4,10 @@ members = [
     "crates/cube_solver",
     "crates/solver_store",
     "crates/solver_lab_app",
+    "crates/cube_wasm",
 ]
+# The Tauri desktop shell is its own workspace (different toolchain/deps).
+exclude = ["src-tauri"]
 resolver = "2"
 
 [workspace.package]

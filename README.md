@@ -9,6 +9,33 @@ cubes" grid of many cubes solving at once.
 Built as a Rust workspace with a clean separation between the cube model, the
 solvers, persistence, and the GUI.
 
+## Two front-ends, one solver core
+
+1. **Cube Solver** — the polished studio UI as a **cross-platform native desktop
+   app** (Tauri, `src-tauri/` + `web/`). The interface is the refined web design;
+   the cube model and solvers run as WebAssembly compiled from `cube_core` /
+   `cube_solver`. *Recommended.*
+2. **Solver Lab** — the original `eframe`/`egui` desktop app
+   (`crates/solver_lab_app`).
+
+### Run Cube Solver (native desktop app)
+
+```sh
+# WASM solver core → generated into web/pkg (rebuild after changing the Rust)
+wasm-pack build crates/cube_wasm --release --target web \
+  --out-dir "$PWD/web/pkg" --out-name cube_wasm
+
+cd src-tauri
+cargo tauri dev      # run the app in a dev window
+cargo tauri build    # native installer for the current OS
+```
+
+`cargo tauri build` produces a native bundle per OS — `.app`/`.dmg` (macOS),
+`.msi`/`.exe` (Windows), `.deb`/`.AppImage` (Linux) — all from this one codebase
+(the 3-OS matrix in `.github/workflows/desktop.yml` builds them in CI). Requires
+a stable Rust toolchain plus the [Tauri prerequisites](https://tauri.app/start/prerequisites/)
+(on Linux, the WebKitGTK dev packages listed in `desktop.yml`).
+
 ## Workspace layout
 
 | Crate | Responsibility |

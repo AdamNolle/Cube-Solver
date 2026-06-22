@@ -1,0 +1,75 @@
+name: Desktop app
+
+# Builds the Cube Solver native desktop app (Tauri) for macOS, Windows, and Linux.
+# One codebase → a native installer per OS.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Per-OS bundle targets — avoids the flaky Linux AppImage bundler.
+          - os: macos-latest
+            bundles: app,dmg
+          - os: ubuntu-22.04
+            bundles: deb
+          - os: windows-latest
+            bundles: msi,nsis
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      # Tauri v2 system dependencies on Linux.
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev build-essential curl wget file libxdo-dev libssl-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target\nsrc-tauri -> src-tauri/target"
+
+      - name: Install wasm-pack & Tauri CLI
+        run: |
+          cargo install wasm-pack --locked || true
+          cargo install tauri-cli --version "^2" --locked || true
+
+      - name: Build the WASM solver core
+        run: wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm
+
+      # Lint the (separate-workspace) Tauri shell once; deps are present on Linux.
+      - name: Lint the Tauri shell
+        if: matrix.os == 'ubuntu-22.04'
+        working-directory: src-tauri
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+
+      - name: Build the Tauri app
+        working-directory: src-tauri
+        run: cargo tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: cube-solver-${{ matrix.os }}
+          path: |
+            src-tauri/target/release/bundle/**
+          if-no-files-found: warn
