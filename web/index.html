@@ -1338,11 +1338,34 @@ class Component extends DCLogic {
       if (self.ui && self.ui.status) self.ui.status.textContent = 'Solve cancelled — scramble or solve again';
       if (self.syncControls) self.syncControls();
     }
-    function showCancel(self, show){
-      var btn = self.root.querySelector('[data-cancel-solve]');
-      if (btn) btn.style.display = show ? 'block' : 'none';
+    // Solve is greyed/disabled while a solve is in progress (search or replay);
+    // Cancel is only enabled while there is an in-flight search to abort.
+    function updateSolveButtons(self){
+      var searching = !!self._solvePending;
+      var solving = searching || (self.busy && self.phase === 'solving');
+      var solveBtn = self.root.querySelector('[data-onclick="onSolve"]');
+      if (solveBtn){
+        solveBtn.style.opacity = solving ? '0.45' : '';
+        solveBtn.style.pointerEvents = solving ? 'none' : '';
+        solveBtn.style.cursor = solving ? 'default' : '';
+      }
+      var cb = self.root.querySelector('[data-cancel-solve]');
+      if (cb){
+        cb.disabled = !searching;
+        cb.style.opacity = searching ? '1' : '0.4';
+        cb.style.pointerEvents = searching ? 'auto' : 'none';
+        cb.style.cursor = searching ? 'pointer' : 'default';
+      }
+    }
+    // Kept for existing call sites — state is derived from _solvePending/busy.
+    function showCancel(self){ updateSolveButtons(self); }
+    // Re-sync the Solve/Cancel buttons on every UI state change the design makes.
+    if (inst.syncControls){
+      var origSyncC = inst.syncControls.bind(inst);
+      inst.syncControls = function(){ origSyncC(); updateSolveButtons(this); };
     }
     ensureWorker(inst);   // warm up the solver worker so it's ready before the first solve
+    updateSolveButtons(inst);   // initial state: Solve enabled, Cancel greyed
 
     // During a visual-only solve there's no real search — don't animate the
     // fabricated node/generation telemetry the design shows per frame.
@@ -1543,7 +1566,8 @@ class Component extends DCLogic {
       if (solveBtn && solveBtn.parentNode && !self.root.querySelector('[data-cancel-solve]')){
         var cb = document.createElement('button'); cb.setAttribute('data-cancel-solve',''); cb.type='button';
         cb.textContent = '✕  Cancel solve';
-        cb.style.cssText = 'display:none;width:100%;height:42px;margin-top:10px;border-radius:13px;border:1px solid #E6C9C9;background:#FCF1F1;color:#A23B3B;font-size:13px;font-weight:600;cursor:pointer;';
+        cb.style.cssText = 'display:block;width:100%;height:42px;margin-top:10px;border-radius:13px;border:1px solid #E6C9C9;background:#FCF1F1;color:#A23B3B;font-size:13px;font-weight:600;opacity:0.4;pointer-events:none;cursor:default;';
+        cb.disabled = true;   // greyed until a solve is running
         cb.addEventListener('click', function(){ cancelSolve(self); });
         solveBtn.parentNode.insertBefore(cb, solveBtn.nextSibling);
       }
