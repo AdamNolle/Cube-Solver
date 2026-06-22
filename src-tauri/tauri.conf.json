@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cube Solver",
+  "version": "0.1.0",
+  "identifier": "dev.cubesolver.app",
+  "build": {
+    "frontendDist": "../web",
+    "beforeBuildCommand": "wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm || wasm-pack build ../crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Cube Solver — N×N Solver Studio",
+        "width": 1380,
+        "height": 900,
+        "minWidth": 920,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Education",
+    "shortDescription": "N×N cube solver studio",
+    "longDescription": "Generate scrambled N×N cubes and watch real Rust solvers (meet-in-the-middle, beam, island genetic) find verified solutions — plus a wall of evolutionary trials."
+  }
+}

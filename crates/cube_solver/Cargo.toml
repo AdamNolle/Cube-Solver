@@ -9,6 +9,17 @@ crossbeam-channel.workspace = true
 cube_core = { path = "../cube_core" }
 rand.workspace = true
 rand_chacha.workspace = true
-rayon.workspace = true
+rayon = { workspace = true, optional = true }
 serde.workspace = true
+# Monotonic clock that works on both native and wasm32 (std::time::Instant
+# panics on wasm32-unknown-unknown).
+web-time = "1"
+
+[features]
+# `parallel` (default) uses rayon + OS threads. Disable it to build for
+# single-threaded targets such as wasm32-unknown-unknown.
+default = ["parallel"]
+parallel = ["dep:rayon"]
+# Work-in-progress N×N reduction solver; off by default.
+reduction = []
 

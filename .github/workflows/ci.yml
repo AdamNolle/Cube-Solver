@@ -23,6 +23,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       # eframe/winit need these system libraries on Linux.
       - name: Install Linux GUI deps
@@ -43,6 +44,12 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Test the gated reduction solver
+        run: cargo test -p cube_solver --features reduction
+
+      - name: WASM solver core compiles (wasm32)
+        run: cargo build -p cube_wasm --target wasm32-unknown-unknown
 
       - name: Release build
         run: cargo build --release --workspace
