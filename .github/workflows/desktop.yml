@@ -46,13 +46,13 @@ jobs:
         with:
           workspaces: ". -> target\nsrc-tauri -> src-tauri/target"
 
-      - name: Install wasm-pack & Tauri CLI
-        run: |
-          cargo install wasm-pack --locked || true
-          cargo install tauri-cli --version "^2" --locked || true
+      - name: Install wasm-pack & Tauri CLI (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack,tauri-cli
 
-      - name: Build the WASM solver core
-        run: wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm
+      # Note: `cargo tauri build` runs the WASM build itself via beforeBuildCommand
+      # in tauri.conf.json, so no separate wasm-pack step is needed here.
 
       # Lint the (separate-workspace) Tauri shell once; deps are present on Linux.
       - name: Lint the Tauri shell

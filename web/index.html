@@ -1141,6 +1141,7 @@ class Component extends DCLogic {
     const origSolve = inst.solve.bind(inst);
     const origReset = inst.resetSolved ? inst.resetSolved.bind(inst) : null;
     const origSetN = inst.setN ? inst.setN.bind(inst) : null;
+    const origReplay = inst.replay ? inst.replay.bind(inst) : null;
 
     inst.scrambleDepth = 6;
     const sd = inst.root.querySelector('[data-scramble]'); if (sd) sd.value = 6;
@@ -1166,14 +1167,20 @@ class Component extends DCLogic {
     }
 
     if (origReset) inst.resetSolved = function(anim){
+      abortPendingSolve(this);   // a pending solve must not land on a reset/rescrambled cube
       origReset(anim);
       if (this.lab){ this.lab.set_size(this.n); this.lab.reset(); }
     };
     if (origSetN) inst.setN = function(n){
+      abortPendingSolve(this);   // changing N invalidates an in-flight solve's moves
       origSetN(n);
       this.lastScramble = [];   // a new N invalidates the old scramble's layers
       if (this.lab){ this.lab.set_size(this.n); this.lab.reset(); }
       if (this._refreshSolvability) this._refreshSolvability(this);
+    };
+    if (origReplay) inst.replay = function(){
+      abortPendingSolve(this);   // don't let an in-flight solve collide with a replay
+      return origReplay();
     };
 
     inst.scramble = function(){
@@ -1280,10 +1287,29 @@ class Component extends DCLogic {
           if (d.type === 'error'){ self._workerReady = false; return; }
           if (d.type === 'result'){ onSolveResult(self, d); return; }
         };
-        w.onerror = function(){ self._workerReady = false; };  // broken → page falls back to sync
+        w.onerror = function(){
+          self._workerReady = false; self._worker = null;
+          // Worker crashed mid-solve → recover on the main thread (bounded) so the
+          // UI never sticks on 'Solving…'.
+          if (self._solvePending){
+            var r; try { r = self.lab.solve(Math.min(self.scrambleDepth||6, 9), 1500); } catch(e){ r = '{"found":false}'; }
+            onSolveResult(self, { type:'result', ok:true, result:r });
+          }
+          ensureWorker(self);   // fresh worker for next time
+        };
         self._worker = w;
       } catch(e){ console.warn('worker unavailable; solving on main thread', e); self._worker = null; self._workerReady = false; }
       return self._worker;
+    }
+    // Stop an in-flight worker solve without touching status (guard before
+    // scramble/reset/N/replay). Returns true if a solve was aborted.
+    function abortPendingSolve(self){
+      if (!self._solvePending) return false;
+      self._solvePending = false;
+      if (self._worker){ try { self._worker.terminate(); } catch(e){} self._worker = null; self._workerReady = false; }
+      showCancel(self, false);
+      ensureWorker(self);
+      return true;
     }
     function onSolveResult(self, data){
       if (!self._solvePending) return;   // cancelled or stale
@@ -1307,11 +1333,7 @@ class Component extends DCLogic {
       if (self.syncControls) self.syncControls();
     }
     function cancelSolve(self){
-      if (!self._solvePending) return;
-      self._solvePending = false;
-      if (self._worker){ try { self._worker.terminate(); } catch(e){} self._worker = null; self._workerReady = false; }  // kill the running solve
-      ensureWorker(self);   // spin up a fresh worker for next time
-      showCancel(self, false);
+      if (!abortPendingSolve(self)) return;
       if (self.resetLanes) self.resetLanes();
       if (self.ui && self.ui.status) self.ui.status.textContent = 'Solve cancelled — scramble or solve again';
       if (self.syncControls) self.syncControls();
@@ -1560,6 +1582,23 @@ class Component extends DCLogic {
         if (typeof fn === 'function') el.addEventListener(evmap[attr], fn);
       });
     });
+    // Some webviews (esp. WebKitGTK on Linux VMs/headless) can't create a WebGL
+    // context. Without this guard the thrown error aborts mount and the WHOLE app
+    // is dead. Catch it, stub the renderer, and keep the solver UI usable.
+    if (typeof inst.initThree === 'function'){
+      const origInitThree = inst.initThree.bind(inst);
+      inst.initThree = function(){
+        try { origInitThree(); }
+        catch(e){
+          console.warn('WebGL unavailable — 3D view disabled; the solver still works.', e);
+          const T = window.THREE; this._noWebGL = true;
+          this.renderer = this.renderer || { render:function(){}, setSize:function(){}, setPixelRatio:function(){}, domElement: document.createElement('canvas') };
+          if (T){ this.scene = this.scene || new T.Scene(); this.camera = this.camera || new T.PerspectiveCamera(50,1,0.1,100); this.cubeGroup = this.cubeGroup || new T.Group(); }
+          const stage = this.root && this.root.querySelector('[data-stage]');
+          if (stage){ const m=document.createElement('div'); m.style.cssText='position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;color:#8C887F;font-size:13px;padding:24px;'; m.innerHTML='3D view unavailable (no WebGL on this system).<br>Scramble &amp; Solve still work.'; stage.appendChild(m); }
+        }
+      };
+    }
     if (typeof inst.componentDidMount === 'function') inst.componentDidMount();
     return inst;
   }

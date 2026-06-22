@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "identifier": "dev.cubesolver.app",
   "build": {
-    "frontendDist": "../web"
+    "frontendDist": "../web",
+    "beforeBuildCommand": "wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm || wasm-pack build ../crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm"
   },
   "app": {
     "windows": [
