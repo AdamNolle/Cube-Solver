@@ -1278,27 +1278,30 @@ class Component extends DCLogic {
 
     // ---- Web Worker solve plumbing (responsive + cancellable) ----
     function ensureWorker(self){
+      if (self._workerBroken) return null;   // a worker failed here before → use the main thread
       if (self._worker) return self._worker;
       try {
         var w = new Worker('./solver-worker.js', { type: 'module' });
         w.onmessage = function(e){
           var d = e.data || {};
           if (d.type === 'ready'){ self._workerReady = true; return; }
-          if (d.type === 'error'){ self._workerReady = false; return; }
+          if (d.type === 'error'){ self._workerReady = false; self._workerBroken = true; return; }
           if (d.type === 'result'){ onSolveResult(self, d); return; }
         };
         w.onerror = function(){
-          self._workerReady = false; self._worker = null;
-          // Worker crashed mid-solve → recover on the main thread (bounded) so the
-          // UI never sticks on 'Solving…'.
+          // Worker failed to load/run (common in some webviews). Give up on workers
+          // entirely — do NOT recreate (that loops forever) — and fall back to the
+          // bounded main-thread solve. Recover any in-flight solve immediately.
+          self._workerReady = false; self._workerBroken = true;
+          if (self._worker){ try { self._worker.terminate(); } catch(e){} }
+          self._worker = null;
           if (self._solvePending){
             var r; try { r = self.lab.solve(Math.min(self.scrambleDepth||6, 9), 1500); } catch(e){ r = '{"found":false}'; }
             onSolveResult(self, { type:'result', ok:true, result:r });
           }
-          ensureWorker(self);   // fresh worker for next time
         };
         self._worker = w;
-      } catch(e){ console.warn('worker unavailable; solving on main thread', e); self._worker = null; self._workerReady = false; }
+      } catch(e){ self._workerBroken = true; self._worker = null; self._workerReady = false; }
       return self._worker;
     }
     // Stop an in-flight worker solve without touching status (guard before
@@ -1332,8 +1335,34 @@ class Component extends DCLogic {
       if (self.ui && self.ui.count) self.ui.count.style.display = 'inline-block';
       if (self.syncControls) self.syncControls();
     }
+    // Stop an in-flight solution *replay* (the visible, multi-second animation) and
+    // put the cube back to its scrambled state so a cancel cleanly returns to
+    // "ready to solve". This is what the user is actually watching when they hit
+    // Cancel — the search itself finishes in ~100ms.
+    function stopReplay(self){
+      var animating = (self.busy && self.phase === 'solving') || (self.queue && self.queue.length) || self._visualSolve;
+      if (!animating) return false;
+      if (self.activeMove && self.finalizeMove){ try { self.finalizeMove(); } catch(e){} }
+      self.activeMove = null;
+      self.queue = []; self.movesDone = 0; self.totalMoves = 0; self._visualSolve = false;
+      self.phase = 'idle'; self.busy = false;
+      // Rebuild and re-apply the scramble so the visible cube matches the solver's
+      // state again (a half-played solution would otherwise desync the next solve).
+      if (self.buildCube){
+        try {
+          self.buildCube(self.n);
+          if (self.applyInstant) (self.lastScramble || []).forEach(function(m){ self.applyInstant(m); });
+        } catch(e){}
+        self.scrambled = (self.lastScramble || []).length > 0;
+      }
+      if (self.ui && self.ui.move) self.ui.move.style.display = 'none';
+      if (self.ui && self.ui.count) self.ui.count.style.display = 'none';
+      return true;
+    }
     function cancelSolve(self){
-      if (!abortPendingSolve(self)) return;
+      var hadSearch = abortPendingSolve(self);   // stop an off-thread search, if any
+      var hadReplay = stopReplay(self);          // stop the visible replay, if any
+      if (!hadSearch && !hadReplay) return;      // nothing to cancel
       if (self.resetLanes) self.resetLanes();
       if (self.ui && self.ui.status) self.ui.status.textContent = 'Solve cancelled — scramble or solve again';
       if (self.syncControls) self.syncControls();
