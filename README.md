@@ -36,6 +36,61 @@ cargo tauri build    # native installer for the current OS
 a stable Rust toolchain plus the [Tauri prerequisites](https://tauri.app/start/prerequisites/)
 (on Linux, the WebKitGTK dev packages listed in `desktop.yml`).
 
+## How Cube Solver works
+
+Cube Solver is the polished web UI **driven by the real Rust solver**, packaged as a
+native desktop app. Nothing in the browser/webview is simulated — every scramble and
+solve is computed by the compiled Rust:
+
+```
+cube_core + cube_solver  ──wasm-pack──▶  web/pkg/  (WebAssembly)
+                                            │  imported by
+                                  web/index.html  (three.js 3D UI)
+                                            │  embedded by
+                                      src-tauri/   (Tauri v2 native shell)
+```
+
+### Studio
+
+1. **Scramble** — applies random face turns to the on-screen cube *instantly*. On
+   the 2×2/3×3 the turns are outer faces only (so the solver can invert them);
+   bigger cubes mix **every layer** for a proper full scramble.
+2. **Solve** — the cube's **sticker state** (not the scramble moves) is handed to the
+   solver, which returns the fewest-move, replay-verified solution; the cube then
+   animates it.
+   - It runs in a **Web Worker** (off the main thread), so the UI stays responsive
+     and a long/hard solve can be **cancelled** (the worker is terminated).
+   - A **"scramble hidden from the solver"** panel proves it isn't cheating: the
+     solver only sees the 54 sticker colours, and its solution is usually *shorter*
+     than the scramble, so it can't be replaying the inverse.
+3. **Solver race** — three independent engines compete: **meet-in-the-middle**
+   (exact, bidirectional BFS), **beam search**, and an **island genetic algorithm**.
+
+**What actually solves:** only the **2×2 and 3×3** are solved for real — blind search
+is exponential, so it can't scale further. 4×4 and up render and scramble fully but
+are **visual** (Solve plays back the inverse); the in-app banner tells you which mode
+you're in, and warns when a scramble is too deep to guarantee a solve. Truly
+unlimited solving needs structure-exploiting algorithms (Kociemba's two-phase for the
+3×3, the reduction method for arbitrary N — the latter is the WIP `cube_solver::reduction`).
+
+### Swarm
+
+A wall of independent **evolutionary trials**, each a candidate solution to *your
+Studio cube* — it re-syncs the moment you re-scramble. Trials start as exact copies
+of the cube and mutate/recombine (a (1+λ) elitist search with stagnation restarts)
+until they reach solved (the card turns green, then restarts). The **"# off"** on a
+card is how many stickers are still out of place.
+
+### Robustness notes
+
+- `web/solver-worker.js` loads the WASM and solves off-thread; the page falls back
+  to a bounded (~1.5 s) main-thread solve if Web Workers aren't available.
+- three.js (r128) is vendored in `web/vendor/`, so the app works offline.
+- The Tauri shell builds the WASM via `beforeBuildCommand`, so a fresh
+  `cargo tauri build` is self-contained.
+- A WebGL failure (e.g. headless Linux WebKitGTK) degrades gracefully — the solver
+  UI stays usable with a "3D unavailable" notice instead of a blank window.
+
 ## Workspace layout
 
 | Crate | Responsibility |
