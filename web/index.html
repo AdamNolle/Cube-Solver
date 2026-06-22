@@ -1247,35 +1247,80 @@ class Component extends DCLogic {
         if (this.syncControls) this.syncControls();
         return;
       }
-      // Real solve (2×2/3×3): block re-entry with a PENDING flag — not busy — so
-      // the rAF loop can't fire onPhaseComplete() on the still-empty queue.
+      // Real solve (2×2/3×3). _solvePending (not busy) blocks re-entry without
+      // letting the rAF loop finish early on the empty queue.
       this._visualSolve = false;
       this._solvePending = true;
       if (this.ui && this.ui.status) this.ui.status.textContent = 'Solving…';
       if (this.startLanes) this.startLanes();
       if (this.syncControls) this.syncControls();
-      setTimeout(()=>{
-        this._solvePending = false;
-        let res;
-        try { res = JSON.parse(this.lab.solve(Math.min(this.scrambleDepth||6, 9), 5000)); }
-        catch(e){ console.warn('solve error', e); res = {found:false, lanes:[]}; }
-        this.realLanes = res.lanes || [];
-        if (!res.found || !res.moves || !res.moves.length){
-          if (this.ui && this.ui.status) this.ui.status.textContent = 'No verified solution within budget — lower the scramble depth';
-          lanesUpdate(this, res.lanes || [], null, 0);
-          if (this.syncControls) this.syncControls();
-          return;
-        }
-        this.realWinner = res.winner;
-        this.lastSolution = res.moves;
-        updateProof(this, (this.lastScramble||[]).length, res.moveCount);
-        this.queue = res.moves.slice();   // fill the queue BEFORE claiming busy
-        this.movesDone = 0; this.totalMoves = this.queue.length;
-        this.phase = 'solving'; this.busy = true;
-        if (this.ui && this.ui.count) this.ui.count.style.display = 'inline-block';
-        if (this.syncControls) this.syncControls();
-      }, 30);
+      ensureWorker(this);
+      if (this._workerReady && this._worker){
+        // Off the main thread → UI stays responsive and the solve is cancellable.
+        showCancel(this, true);
+        this._worker.postMessage({ type:'solve', n: this.n, depth: this.scrambleDepth||6, time: 6000, moves: this.lastScramble });
+      } else {
+        // Fallback: bounded main-thread solve (~1.5s worst case, never the old 5s).
+        var self = this;
+        setTimeout(function(){
+          var r; try { r = self.lab.solve(Math.min(self.scrambleDepth||6, 9), 1500); } catch(e){ r = '{"found":false}'; }
+          onSolveResult(self, { type:'result', ok:true, result:r });
+        }, 30);
+      }
     };
+
+    // ---- Web Worker solve plumbing (responsive + cancellable) ----
+    function ensureWorker(self){
+      if (self._worker) return self._worker;
+      try {
+        var w = new Worker('./solver-worker.js', { type: 'module' });
+        w.onmessage = function(e){
+          var d = e.data || {};
+          if (d.type === 'ready'){ self._workerReady = true; return; }
+          if (d.type === 'error'){ self._workerReady = false; return; }
+          if (d.type === 'result'){ onSolveResult(self, d); return; }
+        };
+        w.onerror = function(){ self._workerReady = false; };  // broken → page falls back to sync
+        self._worker = w;
+      } catch(e){ console.warn('worker unavailable; solving on main thread', e); self._worker = null; self._workerReady = false; }
+      return self._worker;
+    }
+    function onSolveResult(self, data){
+      if (!self._solvePending) return;   // cancelled or stale
+      self._solvePending = false;
+      showCancel(self, false);
+      var res = null;
+      if (data && data.ok){ try { res = JSON.parse(data.result); } catch(e){} }
+      if (!res || !res.found || !res.moves || !res.moves.length){
+        if (self.ui && self.ui.status) self.ui.status.textContent = 'No verified solution within budget — lower the scramble depth';
+        lanesUpdate(self, (res && res.lanes) || [], null, 0);
+        if (self.syncControls) self.syncControls();
+        return;
+      }
+      self.realWinner = res.winner; self.realLanes = res.lanes || [];
+      self.lastSolution = res.moves;
+      updateProof(self, (self.lastScramble||[]).length, res.moveCount);
+      self.queue = res.moves.slice();   // fill the queue BEFORE claiming busy
+      self.movesDone = 0; self.totalMoves = self.queue.length;
+      self.phase = 'solving'; self.busy = true;
+      if (self.ui && self.ui.count) self.ui.count.style.display = 'inline-block';
+      if (self.syncControls) self.syncControls();
+    }
+    function cancelSolve(self){
+      if (!self._solvePending) return;
+      self._solvePending = false;
+      if (self._worker){ try { self._worker.terminate(); } catch(e){} self._worker = null; self._workerReady = false; }  // kill the running solve
+      ensureWorker(self);   // spin up a fresh worker for next time
+      showCancel(self, false);
+      if (self.resetLanes) self.resetLanes();
+      if (self.ui && self.ui.status) self.ui.status.textContent = 'Solve cancelled — scramble or solve again';
+      if (self.syncControls) self.syncControls();
+    }
+    function showCancel(self, show){
+      var btn = self.root.querySelector('[data-cancel-solve]');
+      if (btn) btn.style.display = show ? 'block' : 'none';
+    }
+    ensureWorker(inst);   // warm up the solver worker so it's ready before the first solve
 
     // During a visual-only solve there's no real search — don't animate the
     // fabricated node/generation telemetry the design shows per frame.
@@ -1471,6 +1516,14 @@ class Component extends DCLogic {
         var ban = document.createElement('div'); ban.setAttribute('data-solvability','');
         ban._base = 'font-size:12px;line-height:1.5;border:1px solid;border-radius:12px;padding:10px 12px;margin:0 0 12px;';
         solveBtn.parentNode.insertBefore(ban, solveBtn);
+      }
+      // Cancel button (shown only while a solve is running in the worker).
+      if (solveBtn && solveBtn.parentNode && !self.root.querySelector('[data-cancel-solve]')){
+        var cb = document.createElement('button'); cb.setAttribute('data-cancel-solve',''); cb.type='button';
+        cb.textContent = '✕  Cancel solve';
+        cb.style.cssText = 'display:none;width:100%;height:42px;margin-top:10px;border-radius:13px;border:1px solid #E6C9C9;background:#FCF1F1;color:#A23B3B;font-size:13px;font-weight:600;cursor:pointer;';
+        cb.addEventListener('click', function(){ cancelSolve(self); });
+        solveBtn.parentNode.insertBefore(cb, solveBtn.nextSibling);
       }
       ['4','5','7','20','50','100','500','1000'].forEach(function(v){
         var b = self.root.querySelector('[data-n="'+v+'"]');
