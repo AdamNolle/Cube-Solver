@@ -12,6 +12,7 @@
 
 pub mod coords;
 pub mod movetables;
+pub mod search;
 
 /// A cube at the cubie level: corner/edge permutation + orientation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
