@@ -28,6 +28,24 @@ fn axis_index(a: Axis) -> u8 {
     }
 }
 
+thread_local! {
+    /// The two-phase 3×3 solver builds a few MB of lookup tables once; cache it on
+    /// the (single) worker thread so only the first solve pays the build cost.
+    static KOCIEMBA: std::cell::OnceCell<cube_solver::kociemba::search::Solver> =
+        const { std::cell::OnceCell::new() };
+}
+
+fn with_kociemba<R>(f: impl FnOnce(&cube_solver::kociemba::search::Solver) -> R) -> R {
+    KOCIEMBA.with(|c| f(c.get_or_init(cube_solver::kociemba::search::Solver::new)))
+}
+
+/// Build the 3×3 two-phase tables ahead of the first solve. The worker calls this
+/// once at startup so the first real Solve isn't slowed by the ~one-time table build.
+#[wasm_bindgen]
+pub fn warm_solver() {
+    with_kociemba(|_| {});
+}
+
 /// A tiny deterministic RNG (xorshift64*) so scrambles are reproducible by seed
 /// without pulling OS entropy.
 struct Rng(u64);
@@ -189,10 +207,59 @@ impl CubeLab {
         let _ = self.cube.apply_move(mv);
     }
 
-    /// Run the three solver engines on the current state and store the winning
-    /// (fewest-move, replay-verified) solution. Returns a JSON summary.
+    /// Solve a 3×3 with the two-phase (Kociemba) solver. Returns the same JSON shape
+    /// as `solve`, or `None` if conversion/solve fails (then `solve` falls back).
+    fn try_kociemba(&mut self) -> Option<String> {
+        let solution =
+            with_kociemba(|s| cube_solver::kociemba::cube3::solve_sticker(&self.cube, s))?;
+        let size = cube_core::CubeSize::new(3).ok()?;
+        let mut moves_json: Vec<serde_json::Value> = Vec::new();
+        let mut notation: Vec<String> = Vec::new();
+        for m in &solution {
+            notation.push(m.notation(size));
+            let axis = axis_index(m.axis);
+            let (count, dir): (usize, i32) = match m.turns.rem_euclid(4) {
+                1 => (1, 1),
+                2 => (2, 1),
+                3 => (1, -1),
+                _ => (0, 1),
+            };
+            for layer in m.layer_start..=m.layer_end {
+                for _ in 0..count {
+                    moves_json
+                        .push(serde_json::json!({ "axis": axis, "layer": layer, "dir": dir }));
+                }
+            }
+        }
+        self.solution = solution;
+        let n = moves_json.len();
+        Some(
+            serde_json::json!({
+                "found": true,
+                "winner": "kociemba",
+                "moveCount": n,
+                "elapsedMs": 0,
+                "moves": moves_json,
+                "notation": notation,
+                "lanes": [ { "id": "kociemba", "pct": 100, "moveCount": n, "label": "two-phase", "solved": true } ],
+            })
+            .to_string(),
+        )
+    }
+
+    /// Run the solver on the current state and store the winning (fewest-move,
+    /// replay-verified) solution. 3×3 uses the two-phase solver; larger cubes use the
+    /// legacy engine race. Returns a JSON summary.
     pub fn solve(&mut self, max_depth: usize, time_ms: f64) -> String {
         let snapshot = self.cube.clone_snapshot();
+        // 3×3: the two-phase (Kociemba) solver returns a verified solution for ANY
+        // scramble — not just the <=9-move ones the legacy search can reach. Fall
+        // through to the legacy search only if it somehow fails.
+        if self.n == 3 {
+            if let Some(json) = self.try_kociemba() {
+                return json;
+            }
+        }
         let depth = max_depth.clamp(1, 9);
         let mut budget = SolverBudget::for_depth(depth);
         budget.time_limit = Duration::from_millis(time_ms.max(50.0) as u64);
@@ -693,6 +760,48 @@ mod tests {
             }
             assert!(lab.is_solved(), "depth {depth} solution did not solve");
         }
+    }
+
+    /// The two-phase solver cracks ANY 3×3 scramble — far past the legacy ≤9-move
+    /// limit — and `solve()` routes every 3×3 through it.
+    #[test]
+    fn kociemba_solves_arbitrarily_deep_3x3() {
+        let mut lab = CubeLab::new(3);
+        let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..40 {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let axis = (s % 3) as u8;
+            let layer: usize = if (s >> 3) & 1 == 0 { 0 } else { 2 };
+            let dir: i32 = if (s >> 4) & 1 == 0 { 1 } else { -1 };
+            lab.apply_design_move(axis, layer, dir);
+        }
+        assert!(
+            !lab.is_solved(),
+            "a 40-move scramble should not already be solved"
+        );
+        let v: serde_json::Value = serde_json::from_str(&lab.solve(20, 5000.0)).unwrap();
+        assert!(
+            v["found"].as_bool().unwrap(),
+            "deep 3x3 reported no solution"
+        );
+        assert_eq!(
+            v["winner"].as_str().unwrap(),
+            "kociemba",
+            "3x3 should use the two-phase solver"
+        );
+        for m in v["moves"].as_array().unwrap() {
+            lab.apply_design_move(
+                m["axis"].as_u64().unwrap() as u8,
+                m["layer"].as_u64().unwrap() as usize,
+                m["dir"].as_i64().unwrap() as i32,
+            );
+        }
+        assert!(
+            lab.is_solved(),
+            "the two-phase solution did not solve the deep scramble"
+        );
     }
 
     #[test]
