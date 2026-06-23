@@ -153,9 +153,22 @@ puzzles and do not generalize to arbitrary N.
 cargo test --workspace                                   # all tests
 cargo clippy --workspace --all-targets -- -D warnings    # lint gate
 cargo fmt --all -- --check                               # format gate
+python3 tools/gen-index.py                                # regenerate web/index.html
 ```
 
 CI runs format + clippy + tests + release build on Linux, macOS, and Windows.
+
+### The web UI is generated
+
+`web/index.html` is **generated** by `tools/gen-index.py`, which wraps the design
+component in `tools/design-source.txt` with the real Rust/WASM solver wiring
+(`wireRealSolver`). Edit the generator, not `index.html` directly, then re-run it.
+A `build.rs` guard fails the Tauri build loudly if `web/index.html` is missing or
+stale, so a broken frontend can never be silently embedded into a bundle.
+
+> ⚠️ **Don't keep this repo in an iCloud/Dropbox-synced folder.** Sync can delete
+> or duplicate (`… 2.html`) source files mid-build, producing apps built from a
+> stale frontend. Clone it somewhere local (e.g. `~/code/`).
 
 ## License
 
