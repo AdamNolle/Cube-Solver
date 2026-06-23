@@ -11,6 +11,7 @@
 //! `new[i] = a[b[i]] (+ orientation)`.
 
 pub mod coords;
+pub mod movetables;
 
 /// A cube at the cubie level: corner/edge permutation + orientation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
