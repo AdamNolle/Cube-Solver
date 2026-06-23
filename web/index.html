@@ -1281,7 +1281,10 @@ class Component extends DCLogic {
 
     inst.solve = function(){
       if (this.mode !== 'cubie') return origSolve();   // texture (huge) cubes: design path
-      if (!this.scrambled || this.busy || this._solvePending) return;
+      if (this.busy || this._solvePending) return;
+      // Solve must always do something. On a fresh / already-solved cube
+      // (scrambled=false) it used to silently no-op; scramble first, then solve.
+      if (!this.scrambled){ if (this.scramble) this.scramble(); if (!this.scrambled) return; }
       // Visual-only cubes (N>3): animate the inverse with HONEST lanes — no real
       // search. Queue is filled synchronously so the loop never finishes early.
       if (this.n > 3 || !this.lab){
@@ -1430,10 +1433,13 @@ class Component extends DCLogic {
     function updateSolveButtons(self){
       var solving = !!self._solvePending || (self.busy && self.phase === 'solving');
       var solveBtn = self.root.querySelector('[data-onclick="onSolve"]');
-      if (solveBtn && solving){
-        solveBtn.style.opacity = '0.45';
-        solveBtn.style.pointerEvents = 'none';
-        solveBtn.style.cursor = 'default';
+      // Solve is greyed ONLY while a solve is in progress. Otherwise it stays
+      // clickable even on a solved/fresh cube (it scrambles first), so it never
+      // silently does nothing. This overrides the design's 'grey when unscrambled'.
+      if (solveBtn){
+        solveBtn.style.opacity = solving ? '0.45' : '1';
+        solveBtn.style.pointerEvents = solving ? 'none' : 'auto';
+        solveBtn.style.cursor = solving ? 'default' : 'pointer';
       }
       var cb = self.root.querySelector('[data-cancel-solve]');
       if (cb){ cb.disabled = false; cb.style.opacity = '1'; cb.style.pointerEvents = 'auto'; cb.style.cursor = 'pointer'; }

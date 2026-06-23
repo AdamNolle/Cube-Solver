@@ -43,6 +43,8 @@ WIRE = r'''
     const origReset = inst.resetSolved ? inst.resetSolved.bind(inst) : null;
     const origSetN = inst.setN ? inst.setN.bind(inst) : null;
     const origReplay = inst.replay ? inst.replay.bind(inst) : null;
+    const origBuildCube = inst.buildCube ? inst.buildCube.bind(inst) : null;
+    const origFinalizeMove = inst.finalizeMove ? inst.finalizeMove.bind(inst) : null;
 
     inst.scrambleDepth = 6;
     const sd = inst.root.querySelector('[data-scramble]'); if (sd) sd.value = 6;
@@ -84,15 +86,57 @@ WIRE = r'''
       return origReplay();
     };
 
+    // ---- GPU memory: free three.js geometries/textures instead of leaking them ----
+    // buildCube() rebuilt the cube and per-move slabs were dropped from the scene
+    // without .dispose(), leaking ~6 MB per texture-cube rebuild — a size-slider
+    // drag could leak 100 MB+ and crash the webview. Shared materials
+    // (bodyMat / faceMats) are reused across builds, so they are never freed.
+    function disposeCube(self){
+      if (!window.THREE || !self.cubeGroup) return;
+      var shared = new Set();
+      if (self.bodyMat) shared.add(self.bodyMat);
+      (self.faceMats || []).forEach(function(m){ shared.add(m); });
+      var geos = new Set();
+      (function scrub(o){
+        if (!o) return;
+        if (o.geometry) geos.add(o.geometry);
+        var m = o.material;
+        if (m) (Array.isArray(m) ? m : [m]).forEach(function(mm){
+          if (mm && !shared.has(mm)){
+            if (mm.map && mm.map.dispose) mm.map.dispose();
+            if (mm.dispose) mm.dispose();
+          }
+        });
+        if (o.children) o.children.slice().forEach(scrub);
+      })(self.cubeGroup);
+      geos.forEach(function(g){ if (g && g.dispose) g.dispose(); });
+    }
+    if (origBuildCube) inst.buildCube = function(n){
+      try { disposeCube(this); } catch(e){}
+      return origBuildCube(n);
+    };
+    if (origFinalizeMove) inst.finalizeMove = function(){
+      var am = this.activeMove, slab = am && am.slab;
+      origFinalizeMove();
+      if (slab){ try {
+        if (slab.geometry && slab.geometry.dispose) slab.geometry.dispose();
+        var sm = slab.material;
+        if (sm) (Array.isArray(sm) ? sm : [sm]).forEach(function(mm){ if (mm && mm.dispose) mm.dispose(); });
+      } catch(e){} }
+    };
+
     inst.scramble = function(){
       if (this.busy) return;
       if (this.mode !== 'cubie') return origScramble();   // huge (texture) cubes: design path
       this.resetSolved(true);
-      const N = this.n, depth = this.scrambleDepth;
+      const N = this.n;
       // 2×2/3×3 can be inverted by the real (outer-move) solver, so scramble with
       // outer faces only. Bigger cubes can't be solved by search anyway, so mix
       // EVERY layer for a proper-looking full scramble (visual).
       const solvable = (N <= 3) && !!this.lab;
+      // Never scramble a solvable cube deeper than the exact solver's reach, or
+      // Solve would search to SOLVE_MAX_DEPTH and find no solution.
+      const depth = solvable ? Math.min(this.scrambleDepth, SOLVE_MAX_DEPTH) : this.scrambleDepth;
       this.lastScramble = [];
       let prev = -1;
       for (let i=0;i<depth;i++){
@@ -138,7 +182,10 @@ WIRE = r'''
 
     inst.solve = function(){
       if (this.mode !== 'cubie') return origSolve();   // texture (huge) cubes: design path
-      if (!this.scrambled || this.busy || this._solvePending) return;
+      if (this.busy || this._solvePending) return;
+      // Solve must always do something. On a fresh / already-solved cube
+      // (scrambled=false) it used to silently no-op; scramble first, then solve.
+      if (!this.scrambled){ if (this.scramble) this.scramble(); if (!this.scrambled) return; }
       // Visual-only cubes (N>3): animate the inverse with HONEST lanes — no real
       // search. Queue is filled synchronously so the loop never finishes early.
       if (this.n > 3 || !this.lab){
@@ -159,6 +206,16 @@ WIRE = r'''
       // letting the rAF loop finish early on the empty queue.
       this._visualSolve = false;
       this._solvePending = true;
+      // Watchdog: if a solve stalls (a slow or hung worker on a hard deep
+      // scramble), recover the UI instead of sticking on 'Solving…' forever.
+      var _sw = this;
+      clearTimeout(this._solveWatchdog);
+      this._solveWatchdog = setTimeout(function(){
+        if (!_sw._solvePending) return;
+        abortPendingSolve(_sw);
+        if (_sw.ui && _sw.ui.status) _sw.ui.status.textContent = 'No verified solution within budget — try a lower scramble depth';
+        if (_sw.syncControls) _sw.syncControls();
+      }, 8000);
       if (this.ui && this.ui.status) this.ui.status.textContent = 'Solving…';
       if (this.startLanes) this.startLanes();
       if (this.syncControls) this.syncControls();
@@ -209,6 +266,7 @@ WIRE = r'''
     // scramble/reset/N/replay). Returns true if a solve was aborted.
     function abortPendingSolve(self){
       if (!self._solvePending) return false;
+      clearTimeout(self._solveWatchdog);
       self._solvePending = false;
       if (self._worker){ try { self._worker.terminate(); } catch(e){} self._worker = null; self._workerReady = false; }
       showCancel(self, false);
@@ -217,6 +275,7 @@ WIRE = r'''
     }
     function onSolveResult(self, data){
       if (!self._solvePending) return;   // cancelled or stale
+      clearTimeout(self._solveWatchdog);
       self._solvePending = false;
       showCancel(self, false);
       var res = null;
@@ -275,10 +334,13 @@ WIRE = r'''
     function updateSolveButtons(self){
       var solving = !!self._solvePending || (self.busy && self.phase === 'solving');
       var solveBtn = self.root.querySelector('[data-onclick="onSolve"]');
-      if (solveBtn && solving){
-        solveBtn.style.opacity = '0.45';
-        solveBtn.style.pointerEvents = 'none';
-        solveBtn.style.cursor = 'default';
+      // Solve is greyed ONLY while a solve is in progress. Otherwise it stays
+      // clickable even on a solved/fresh cube (it scrambles first), so it never
+      // silently does nothing. This overrides the design's 'grey when unscrambled'.
+      if (solveBtn){
+        solveBtn.style.opacity = solving ? '0.45' : '1';
+        solveBtn.style.pointerEvents = solving ? 'none' : 'auto';
+        solveBtn.style.cursor = solving ? 'default' : 'pointer';
       }
       var cb = self.root.querySelector('[data-cancel-solve]');
       if (cb){ cb.disabled = false; cb.style.opacity = '1'; cb.style.pointerEvents = 'auto'; cb.style.cursor = 'pointer'; }
@@ -376,10 +438,13 @@ WIRE = r'''
           c.rot += dt * c.spin; if (c.inner) c.inner.style.transform = 'rotateX(-20deg) rotateY('+c.rot+'deg)';
           if (!repaint) continue;
           var b = i*55, pct = buf[b];
+          // per-cell colour cache; reset if the design rebuilt this card's cells
+          if (!c.last || c._lastCells !== c.cells){ c.last = new Int8Array(54).fill(-1); c._lastCells = c.cells; }
           for (var k=0;k<54;k++){
             var cf=(k/9)|0, cell=k%9, wf=FACE_FOR_CARD[cf];
             var ci = buf[b + 1 + wf*9 + cell];
-            if (c.cells[k]) c.cells[k].style.background = SWPAL[ci] || SWPAL[0];
+            // only touch the DOM when a sticker's colour actually changes
+            if (c.cells[k] && c.last[k] !== ci){ c.cells[k].style.background = SWPAL[ci] || SWPAL[0]; c.last[k] = ci; }
           }
           c.cring.style.strokeDashoffset = c.circ * (1 - pct/100);
           if (pct >= 100){
@@ -469,6 +534,17 @@ WIRE = r'''
     function refreshSolvability(self){
       var ban = self.root.querySelector('[data-solvability]'); if(!ban) return;
       var n = self.n||3, d = self.scrambleDepth||6;
+      // Cap the scramble-depth slider to the exact solver's reach for solvable
+      // cubes — past SOLVE_MAX_DEPTH the solve just returns "no solution". Visual
+      // cubes keep the full deep-scramble range.
+      var sd = self.root.querySelector('[data-scramble]');
+      if (sd){
+        var cap = (n > SOLVE_MAX_N) ? 40 : SOLVE_MAX_DEPTH;
+        if (+sd.max !== cap){
+          sd.max = cap;
+          if (+sd.value > cap){ sd.value = cap; sd.dispatchEvent(new Event('input', { bubbles: true })); d = self.scrambleDepth || cap; }
+        }
+      }
       if (n > SOLVE_MAX_N){
         ban.style.cssText = ban._base + 'background:#FBF4E8;color:#9A6A1E;border-color:#F0E0C2;';
         ban.innerHTML = '<b>'+n+'×'+n+' is visual.</b> Only the 2×2 and 3×3 are solved for real by the engines; bigger cubes scramble fully and Solve plays back a visual demo.';
