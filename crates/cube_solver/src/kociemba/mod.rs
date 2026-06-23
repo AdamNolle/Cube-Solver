@@ -10,6 +10,8 @@
 //! slot its piece comes *from* plus the orientation change, so cubes compose by
 //! `new[i] = a[b[i]] (+ orientation)`.
 
+pub mod coords;
+
 /// A cube at the cubie level: corner/edge permutation + orientation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CubieCube {
