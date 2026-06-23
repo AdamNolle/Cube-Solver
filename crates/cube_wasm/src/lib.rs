@@ -540,8 +540,10 @@ impl Swarm {
             let cur = self.members[i].mismatch;
             let mut best_m = cur;
             let mut best: Option<Vec<Move>> = None;
+            // members[i].seq is immutable across the inner loop (only replaced
+            // after it), so clone the base sequence once instead of 8 times.
+            let base_seq = self.members[i].seq.clone();
             for k in 0..8 {
-                let base_seq = self.members[i].seq.clone();
                 // The first couple of variants splice in a fitter peer's genes
                 // (tournament-picked), the rest are plain mutations.
                 let candidate = if k < 2 && len > 1 {
@@ -608,9 +610,15 @@ impl Swarm {
             }
             for face in Face::ALL {
                 let fs = cube.face_sample(face, 3);
-                for row in &fs.cells {
-                    for c in row {
-                        out.push(color_index(*c));
+                // Always emit a fixed 3x3 (9 cells) per face so the JS swarm layout
+                // (55 bytes/member) stays aligned even for 2x2 cubes, where
+                // face_sample returns 2x2. Nearest-neighbour upsample.
+                let d = fs.cells.len().max(1);
+                for r in 0..3 {
+                    let sr = r * d / 3;
+                    for c in 0..3 {
+                        let sc = c * d / 3;
+                        out.push(color_index(fs.cells[sr][sc]));
                     }
                 }
             }

@@ -121,7 +121,9 @@ impl SolutionCandidate {
         for mv in &self.moves {
             cube.apply_move(*mv)?;
         }
-        Ok(if self.solved { cube.is_solved() } else { true })
+        // Honestly report whether replaying the moves actually leaves the cube
+        // solved, rather than vacuously returning true for a non-solution.
+        Ok(cube.is_solved())
     }
 }
 
