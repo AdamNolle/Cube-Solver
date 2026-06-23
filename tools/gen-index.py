@@ -136,7 +136,7 @@ WIRE = r'''
       const solvable = (N <= 3) && !!this.lab;
       // Never scramble a solvable cube deeper than the exact solver's reach, or
       // Solve would search to SOLVE_MAX_DEPTH and find no solution.
-      const depth = solvable ? Math.min(this.scrambleDepth, SOLVE_MAX_DEPTH) : this.scrambleDepth;
+      const depth = solvable ? Math.min(this.scrambleDepth, N >= 3 ? SOLVE_REAL_DEPTH : SOLVE_MAX_DEPTH) : this.scrambleDepth;
       this.lastScramble = [];
       let prev = -1;
       for (let i=0;i<depth;i++){
@@ -530,7 +530,9 @@ WIRE = r'''
     wireExplanations(inst);
 
     // ---------- Solvability guidance: always say what Solve will do ----------
-    var SOLVE_MAX_N = 3, SOLVE_MAX_DEPTH = 9;
+    // SOLVE_MAX_DEPTH: reach of the legacy search (2x2). SOLVE_REAL_DEPTH: the 3x3
+    // now uses the two-phase (Kociemba) solver, which cracks ANY scramble.
+    var SOLVE_MAX_N = 3, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
     function refreshSolvability(self){
       var ban = self.root.querySelector('[data-solvability]'); if(!ban) return;
       var n = self.n||3, d = self.scrambleDepth||6;
@@ -539,7 +541,7 @@ WIRE = r'''
       // cubes keep the full deep-scramble range.
       var sd = self.root.querySelector('[data-scramble]');
       if (sd){
-        var cap = (n > SOLVE_MAX_N) ? 40 : SOLVE_MAX_DEPTH;
+        var cap = (n > SOLVE_MAX_N) ? 40 : (n >= 3 ? SOLVE_REAL_DEPTH : SOLVE_MAX_DEPTH);
         if (+sd.max !== cap){
           sd.max = cap;
           if (+sd.value > cap){ sd.value = cap; sd.dispatchEvent(new Event('input', { bubbles: true })); d = self.scrambleDepth || cap; }
