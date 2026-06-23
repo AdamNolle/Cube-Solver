@@ -11,6 +11,7 @@
 //! `new[i] = a[b[i]] (+ orientation)`.
 
 pub mod coords;
+pub mod cube3;
 pub mod movetables;
 pub mod search;
 
