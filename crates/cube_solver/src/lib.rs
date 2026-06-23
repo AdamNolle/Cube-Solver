@@ -18,6 +18,9 @@ use web_time::Instant;
 #[cfg(feature = "reduction")]
 pub mod reduction;
 
+// Two-phase (Kociemba-style) 3×3 solver. Built in tested stages.
+pub mod kociemba;
+
 #[derive(Clone, Copy, Debug)]
 pub struct SolverBudget {
     pub max_depth: usize,
