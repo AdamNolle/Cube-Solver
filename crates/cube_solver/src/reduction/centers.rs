@@ -262,7 +262,6 @@ pub(crate) fn cube_rotations(n: usize) -> Vec<Vec<Move>> {
     out
 }
 
-
 /// Solve all six centers. Returns the move sequence; on return the supplied
 /// cube has been mutated to the centers-solved state.
 ///
@@ -465,7 +464,6 @@ mod tests {
         cube
     }
 
-
     #[test]
     #[ignore = "debug"]
     fn centers_failure_probe() {
@@ -480,11 +478,7 @@ mod tests {
                 } else {
                     let mut counts = String::new();
                     for f in Face::ALL {
-                        counts += &format!(
-                            "{:?}={} ",
-                            f,
-                            correct_count(&cube, f, f.color(), n)
-                        );
+                        counts += &format!("{:?}={} ", f, correct_count(&cube, f, f.color(), n));
                     }
                     println!("n={n} seed={seed} FAIL: {counts}");
                 }
@@ -492,7 +486,6 @@ mod tests {
             println!("n={n}: {ok}/{trials}");
         }
     }
-
 
     // WIP: passes for outer-only scrambles but not yet for general scrambles that
     // rotate odd-cube fixed centers or hit even-cube last-center parity. Tracked

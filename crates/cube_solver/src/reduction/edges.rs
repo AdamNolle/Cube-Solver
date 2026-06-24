@@ -10,18 +10,18 @@ use cube_core::{Color, CubeSize, Face, Move, StickerCube};
 /// `t` in `1..=n-2`, [`wing_cells`] returns the two stickers (one per adjacent
 /// face) of that wing. `faceA`/`faceB` solved colors define the edge's identity.
 pub(crate) const EDGE_FACES: [(Face, Face); 12] = [
-    (Face::Up, Face::Front),   // 0  UF
-    (Face::Up, Face::Back),    // 1  UB
-    (Face::Down, Face::Front), // 2  DF
-    (Face::Down, Face::Back),  // 3  DB
+    (Face::Up, Face::Front),    // 0  UF
+    (Face::Up, Face::Back),     // 1  UB
+    (Face::Down, Face::Front),  // 2  DF
+    (Face::Down, Face::Back),   // 3  DB
     (Face::Front, Face::Right), // 4 FR
-    (Face::Back, Face::Right), // 5  BR
-    (Face::Front, Face::Left), // 6  FL
-    (Face::Back, Face::Left),  // 7  BL
-    (Face::Up, Face::Right),   // 8  UR
-    (Face::Up, Face::Left),    // 9  UL
-    (Face::Down, Face::Right), // 10 DR
-    (Face::Down, Face::Left),  // 11 DL
+    (Face::Back, Face::Right),  // 5  BR
+    (Face::Front, Face::Left),  // 6  FL
+    (Face::Back, Face::Left),   // 7  BL
+    (Face::Up, Face::Right),    // 8  UR
+    (Face::Up, Face::Left),     // 9  UL
+    (Face::Down, Face::Right),  // 10 DR
+    (Face::Down, Face::Left),   // 11 DL
 ];
 
 /// Sticker positions `((faceA,rowA,colA),(faceB,rowB,colB))` of wing `t` on edge
@@ -34,18 +34,18 @@ pub(crate) fn wing_cells(
 ) -> ((Face, usize, usize), (Face, usize, usize)) {
     let l = n - 1;
     match e {
-        0 => ((Face::Up, l, t), (Face::Front, 0, t)),               // UF
-        1 => ((Face::Up, 0, t), (Face::Back, 0, l - t)),           // UB
-        2 => ((Face::Down, 0, t), (Face::Front, l, t)),            // DF
-        3 => ((Face::Down, l, t), (Face::Back, l, l - t)),         // DB
-        4 => ((Face::Front, l - t, l), (Face::Right, l - t, 0)),   // FR
-        5 => ((Face::Back, l - t, 0), (Face::Right, l - t, l)),    // BR
-        6 => ((Face::Front, l - t, 0), (Face::Left, l - t, l)),    // FL
-        7 => ((Face::Back, l - t, l), (Face::Left, l - t, 0)),     // BL
-        8 => ((Face::Up, t, l), (Face::Right, 0, l - t)),          // UR
-        9 => ((Face::Up, t, 0), (Face::Left, 0, t)),               // UL
-        10 => ((Face::Down, l - t, l), (Face::Right, l, l - t)),   // DR
-        11 => ((Face::Down, l - t, 0), (Face::Left, l, t)),        // DL
+        0 => ((Face::Up, l, t), (Face::Front, 0, t)),      // UF
+        1 => ((Face::Up, 0, t), (Face::Back, 0, l - t)),   // UB
+        2 => ((Face::Down, 0, t), (Face::Front, l, t)),    // DF
+        3 => ((Face::Down, l, t), (Face::Back, l, l - t)), // DB
+        4 => ((Face::Front, l - t, l), (Face::Right, l - t, 0)), // FR
+        5 => ((Face::Back, l - t, 0), (Face::Right, l - t, l)), // BR
+        6 => ((Face::Front, l - t, 0), (Face::Left, l - t, l)), // FL
+        7 => ((Face::Back, l - t, l), (Face::Left, l - t, 0)), // BL
+        8 => ((Face::Up, t, l), (Face::Right, 0, l - t)),  // UR
+        9 => ((Face::Up, t, 0), (Face::Left, 0, t)),       // UL
+        10 => ((Face::Down, l - t, l), (Face::Right, l, l - t)), // DR
+        11 => ((Face::Down, l - t, 0), (Face::Left, l, t)), // DL
         _ => unreachable!("edge id 0..12"),
     }
 }
@@ -126,7 +126,11 @@ fn edge_setups(n: usize) -> Vec<Vec<Move>> {
     let mut setups = super::centers::cube_rotations(n);
     let mut singles: Vec<Move> = Face::ALL
         .iter()
-        .flat_map(|&f| [1i8, -1, 2].into_iter().map(move |t| Move::face(f, size, t)))
+        .flat_map(|&f| {
+            [1i8, -1, 2]
+                .into_iter()
+                .map(move |t| Move::face(f, size, t))
+        })
         .collect();
     for f in [Face::Up, Face::Right, Face::Front] {
         for d in 1..=n - 2 {
@@ -282,8 +286,7 @@ mod explore {
         for n in [4usize, 5, 6, 7] {
             let cube = solved(n);
             assert!(edges_paired(&cube), "solved n={n} must be paired");
-            for e in 0..12 {
-                let (fa, fb) = EDGE_FACES[e];
+            for (e, &(fa, fb)) in EDGE_FACES.iter().enumerate() {
                 for t in 1..=n - 2 {
                     let (ca, cb) = wing_colors(&cube, e, t);
                     assert_eq!(ca, fa.color(), "edge {e} t{t} A color (n={n})");
@@ -296,6 +299,7 @@ mod explore {
     /// Apply a move list and report how many wing slots changed signature, how
     /// many center cells broke, and whether corners moved. Used to hunt for
     /// center-safe pure wing 3-cycles.
+    #[allow(dead_code)]
     fn analyze(n: usize, moves: &[Move]) -> (usize, bool) {
         let mut cube = solved(n);
         let before = wing_signature(&cube);
@@ -322,8 +326,14 @@ mod explore {
         let mut cube = StickerCube::solved(size);
         let mut rng = seed;
         for _ in 0..depth {
-            let f = [Face::Up, Face::Down, Face::Front, Face::Back, Face::Left, Face::Right]
-                [(lcg(&mut rng) % 6) as usize];
+            let f = [
+                Face::Up,
+                Face::Down,
+                Face::Front,
+                Face::Back,
+                Face::Left,
+                Face::Right,
+            ][(lcg(&mut rng) % 6) as usize];
             let width = 1 + (lcg(&mut rng) % (n as u64 - 1)) as usize; // 1..=n-1
             let turns = [1i8, -1, 2][(lcg(&mut rng) % 3) as usize];
             cube.apply_move(Move::wide(f, size, width, turns)).unwrap();
@@ -351,7 +361,14 @@ mod explore {
                 .count();
             // center-only changes:
             let mut centers = 0;
-            for f in [Face::Up, Face::Down, Face::Front, Face::Back, Face::Left, Face::Right] {
+            for f in [
+                Face::Up,
+                Face::Down,
+                Face::Front,
+                Face::Back,
+                Face::Left,
+                Face::Right,
+            ] {
                 for r in 0..n {
                     for cc in 0..n {
                         if super::super::is_center_cell(r, cc, n)
@@ -392,7 +409,14 @@ mod explore {
             for d in 1..=n - 2 {
                 gens.push(slice_from(Face::Up, n, d, s));
             }
-            for f in [Face::Up, Face::Down, Face::Front, Face::Back, Face::Left, Face::Right] {
+            for f in [
+                Face::Up,
+                Face::Down,
+                Face::Front,
+                Face::Back,
+                Face::Left,
+                Face::Right,
+            ] {
                 gens.push(Move::face(f, size, s));
             }
         }
@@ -402,9 +426,16 @@ mod explore {
             let mut c = base.clone();
             apply_all(&mut c, moves);
             let mut cells = Vec::new();
-            for (fi, f) in [Face::Up, Face::Down, Face::Front, Face::Back, Face::Left, Face::Right]
-                .into_iter()
-                .enumerate()
+            for (fi, f) in [
+                Face::Up,
+                Face::Down,
+                Face::Front,
+                Face::Back,
+                Face::Left,
+                Face::Right,
+            ]
+            .into_iter()
+            .enumerate()
             {
                 for r in 0..n {
                     for cc in 0..n {
@@ -430,8 +461,7 @@ mod explore {
                         })
                     })
                 });
-                if ud_ok
-                    && c3.clone_snapshot().stickers() == solved(n).clone_snapshot().stickers()
+                if ud_ok && c3.clone_snapshot().stickers() == solved(n).clone_snapshot().stickers()
                 {
                     return Some(cells);
                 }
@@ -494,7 +524,14 @@ mod explore {
     fn hunt_center_3cycle() {
         let n = 6;
         let size = CubeSize::new(n).unwrap();
-        let faces = [Face::Up, Face::Down, Face::Front, Face::Back, Face::Left, Face::Right];
+        let faces = [
+            Face::Up,
+            Face::Down,
+            Face::Front,
+            Face::Back,
+            Face::Left,
+            Face::Right,
+        ];
         let changes = |moves: &[Move]| -> (usize, usize) {
             let base = solved(n);
             let mut c = base.clone();
@@ -543,7 +580,8 @@ mod explore {
                             for _ in 0..3 {
                                 apply_all(&mut c3, &comm);
                             }
-                            if c3.clone_snapshot().stickers() == solved(n).clone_snapshot().stickers()
+                            if c3.clone_snapshot().stickers()
+                                == solved(n).clone_snapshot().stickers()
                             {
                                 let notation: Vec<String> =
                                     comm.iter().map(|m| m.notation(size)).collect();
@@ -567,19 +605,28 @@ mod explore {
         let n = 4;
         let mut cube = scramble(n, 0x1234, 40);
         let _ = super::super::solve_centers(&mut cube);
-        for f in [Face::Up, Face::Down, Face::Front, Face::Back, Face::Left, Face::Right] {
+        for f in [
+            Face::Up,
+            Face::Down,
+            Face::Front,
+            Face::Back,
+            Face::Left,
+            Face::Right,
+        ] {
             let want = f.color();
             let mut correct = 0;
             for r in 0..n {
                 for c in 0..n {
-                    if super::super::is_center_cell(r, c, n)
-                        && cube.color_at(f, r, c) == Some(want)
+                    if super::super::is_center_cell(r, c, n) && cube.color_at(f, r, c) == Some(want)
                     {
                         correct += 1;
                     }
                 }
             }
-            println!("face {f:?}: {correct}/{} center cells correct", (n - 2) * (n - 2));
+            println!(
+                "face {f:?}: {correct}/{} center cells correct",
+                (n - 2) * (n - 2)
+            );
         }
         println!("centers_solved={}", centers_solved(&cube));
     }
@@ -661,7 +708,14 @@ mod explore {
     fn hunt_center_safe_wing_cycles() {
         let n = 6;
         let size = CubeSize::new(n).unwrap();
-        let faces = [Face::Up, Face::Down, Face::Front, Face::Back, Face::Left, Face::Right];
+        let faces = [
+            Face::Up,
+            Face::Down,
+            Face::Front,
+            Face::Back,
+            Face::Left,
+            Face::Right,
+        ];
         // Generator pool: inner single slices, outer turns, wide moves width 2..3.
         let mut gens: Vec<Move> = Vec::new();
         for &f in &faces {
