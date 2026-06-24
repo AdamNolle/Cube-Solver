@@ -340,6 +340,35 @@ mod tests {
     }
 
     /// Inspect the n=6 centre stall: which cells are wrong, of what type/chirality, and
+    /// Which centre orbit stalls on a large cube? Prints wrong cells with their
+    /// orbit signature `(min(rr,cc), max(rr,cc))` where rr=min(r,n-1-r), cc=min(c,n-1-c).
+    #[test]
+    #[ignore = "diagnostic"]
+    fn big_centre_stall() {
+        use super::super::{centers_solved, solve_centers};
+        for n in [8usize, 7] {
+            let mut cube = scramble(n, 0x900, n * 12);
+            solve_centers(&mut cube);
+            println!("n={n}: centres_solved={}", centers_solved(&cube));
+            for f in Face::ALL {
+                let want = f.color();
+                let mut wrong = Vec::new();
+                for r in 1..n - 1 {
+                    for c in 1..n - 1 {
+                        if cube.color_at(f, r, c) != Some(want) {
+                            let rr = r.min(n - 1 - r);
+                            let cc = c.min(n - 1 - c);
+                            wrong.push((r, c, (rr.min(cc), rr.max(cc))));
+                        }
+                    }
+                }
+                if !wrong.is_empty() {
+                    println!("  face {f:?}: {} wrong {:?}", wrong.len(), wrong);
+                }
+            }
+        }
+    }
+
     /// where the matching-colour reservoir pieces sit. Tests the chirality hypothesis.
     #[test]
     #[ignore = "diagnostic"]

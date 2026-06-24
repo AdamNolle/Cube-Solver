@@ -443,24 +443,28 @@ fn build_library(n: usize) -> Vec<Cyc> {
                 by_orbit.entry(orbit_key(p)).or_default().push(m.clone());
             }
         }
-        let mut pure3: Vec<Vec<Move>> = Vec::new();
-        for cycles in by_orbit.values_mut() {
+        // Pair pure 3-cycles WITHIN each orbit, so every centre orbit — including the
+        // deeper ones that first appear on bigger cubes (depth-2/3 X-centres at n≥8) and
+        // whose 3-cycles are longer — gets its own last-two-centres algs, instead of being
+        // crowded out of a single global shortest-N list.
+        let mut orbits: Vec<(usize, usize)> = by_orbit.keys().copied().collect();
+        orbits.sort();
+        for key in &orbits {
+            let cycles = by_orbit.get_mut(key).unwrap();
             cycles.sort_by_key(|s| (s.len(), mv_key(s)));
-            cycles.truncate(60);
-            pure3.extend(cycles.iter().cloned());
-        }
-        pure3.sort_by_key(|s| (s.len(), mv_key(s)));
-        pure3.truncate(260);
-        for p in &pure3 {
-            for q in &pure3 {
-                let meta = commutator(p, q);
-                let mp = seq_perm(&move_perms, ncenters, &meta);
-                if mp == ident || color_faces(&mp) > 2 {
-                    continue;
-                }
-                consider(&meta, &mut by_perm);
-                for ft in &face_turns {
-                    consider(&conjugate(&[*ft], &meta), &mut by_perm);
+            cycles.truncate(48);
+            let cycles = cycles.clone();
+            for p in &cycles {
+                for q in &cycles {
+                    let meta = commutator(p, q);
+                    let mp = seq_perm(&move_perms, ncenters, &meta);
+                    if mp == ident || color_faces(&mp) > 2 {
+                        continue;
+                    }
+                    consider(&meta, &mut by_perm);
+                    for ft in &face_turns {
+                        consider(&conjugate(&[*ft], &meta), &mut by_perm);
+                    }
                 }
             }
         }
