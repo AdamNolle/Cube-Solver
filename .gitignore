@@ -4,3 +4,7 @@
 *.sqlite3
 .DS_Store
 .serena/
+# iCloud sync conflict duplicates (e.g. "Cargo 2.toml", "index 2.html"). These have
+# caused stale embedded frontends; never track them. Move the repo off iCloud Drive.
+* 2.*
+* 3.*

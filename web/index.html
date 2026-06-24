@@ -1279,7 +1279,10 @@ class Component extends DCLogic {
     inst.finishLanes = function(){
       if (this._visualSolve){ setLanesVisual(this); return; }
       const winnerKey = KEYS[this.realWinner] || 'det';
-      lanesUpdate(this, this.realLanes || [], winnerKey, (this.lastSolution||[]).length);
+      // Use the face-turn (HTM) count, not the half-turn-expanded animation list
+      // length, so the lane agrees with the proof box and the README.
+      var moves = (this.realMoveCount != null) ? this.realMoveCount : (this.lastSolution||[]).length;
+      lanesUpdate(this, this.realLanes || [], winnerKey, moves);
     };
 
     inst.solve = function(){
@@ -1390,6 +1393,9 @@ class Component extends DCLogic {
       }
       self.realWinner = res.winner; self.realLanes = res.lanes || [];
       self.lastSolution = res.moves;
+      // res.moveCount is the face-turn (HTM) count; res.moves is the half-turn-
+      // expanded animation list. Keep the HTM count for the lane/proof so both agree.
+      self.realMoveCount = res.moveCount;
       updateProof(self, (self.lastScramble||[]).length, res.moveCount);
       self.queue = res.moves.slice();   // fill the queue BEFORE claiming busy
       self.movesDone = 0; self.totalMoves = self.queue.length;
@@ -1469,9 +1475,10 @@ class Component extends DCLogic {
       if ((this.n||3) === 3){
         var el = this.root.querySelector('[data-lane="det"]');
         if (el){
-          var stat = el.querySelector('[data-stat]'), fill = el.querySelector('[data-fill]');
+          var stat = el.querySelector('[data-stat]'), fill = el.querySelector('[data-fill]'), pct = el.querySelector('[data-pct2]');
           if (stat) stat.textContent = 'solution found — replaying';
           if (fill) fill.style.width = '100%';
+          if (pct) pct.textContent = '100%';
         }
         return;
       }
@@ -1664,8 +1671,10 @@ class Component extends DCLogic {
       if (!self._origLane){
         self._origLane = {};
         ['det','beam','evo'].forEach(function(k){
-          var lab = laneLabelEl(self.root.querySelector('[data-lane="'+k+'"]'));
-          self._origLane[k] = lab ? lab.textContent : '';
+          var el = self.root.querySelector('[data-lane="'+k+'"]');
+          var lab = laneLabelEl(el);
+          var st = el && el.querySelector('[data-stat]');
+          self._origLane[k] = { label: lab ? lab.textContent : '', stat: st ? st.textContent : '' };
         });
       }
       var twoPhase = (n === 3);
@@ -1676,7 +1685,7 @@ class Component extends DCLogic {
       var detEl = self.root.querySelector('[data-lane="det"]');
       var detLab = laneLabelEl(detEl);
       var detDesc = detEl && detEl.querySelector('[data-lane-desc]');
-      if (detLab) detLab.textContent = twoPhase ? 'Two-phase (Kociemba)' : (self._origLane.det || 'Meet-in-the-middle');
+      if (detLab) detLab.textContent = twoPhase ? 'Two-phase (Kociemba)' : (self._origLane.det.label || 'Meet-in-the-middle');
       if (detDesc) detDesc.textContent = twoPhase
         ? 'Orients corners and edges into the UD-slice subgroup, then solves the permutation within it — a near-optimal solution for any 3×3 scramble.'
         : 'Searches forward from the scrambled state and backward from solved until the paths meet — exact & shortest.';
@@ -1686,6 +1695,19 @@ class Component extends DCLogic {
       if (sub) sub.textContent = twoPhase
         ? 'two-phase solver — near-optimal, never the scramble inverse'
         : '3 strategies on the cube state — none see the scramble';
+      // Clear any stale per-lane result (e.g. when switching N) so a previous
+      // solve's "verified · N moves ★" doesn't linger. Never touch lanes mid-solve.
+      if (!self.busy){
+        ['det','beam','evo'].forEach(function(k){
+          var el = self.root.querySelector('[data-lane="'+k+'"]'); if (!el) return;
+          var st = el.querySelector('[data-stat]'), fl = el.querySelector('[data-fill]'),
+              pc = el.querySelector('[data-pct2]'), sr = el.querySelector('[data-star]');
+          if (st) st.textContent = self._origLane[k].stat;
+          if (fl) fl.style.width = '0%';
+          if (pc) pc.textContent = '0%';
+          if (sr) sr.style.display = 'none';
+        });
+      }
     }
     inst._applyEngineLabels = applyEngineLabels;
 

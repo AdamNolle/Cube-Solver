@@ -232,16 +232,21 @@ impl CubeLab {
             }
         }
         self.solution = solution;
-        let n = moves_json.len();
+        // Report the standard face-turn (HTM) count — one per notation entry, where a
+        // half-turn like U2 is a single move. `moves_json` stays half-turn-expanded
+        // (U2 -> two quarter steps) purely so the animation plays each quarter; using
+        // its length as the move count would inflate the figure (~34 vs ~22) and
+        // disagree with both the README and the 2×2 path (which report HTM moves).
+        let htm = notation.len();
         Some(
             serde_json::json!({
                 "found": true,
                 "winner": "kociemba",
-                "moveCount": n,
+                "moveCount": htm,
                 "elapsedMs": 0,
                 "moves": moves_json,
                 "notation": notation,
-                "lanes": [ { "id": "kociemba", "pct": 100, "moveCount": n, "label": "two-phase", "solved": true } ],
+                "lanes": [ { "id": "kociemba", "pct": 100, "moveCount": htm, "label": "two-phase", "solved": true } ],
             })
             .to_string(),
         )

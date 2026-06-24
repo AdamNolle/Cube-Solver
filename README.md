@@ -67,8 +67,9 @@ cube_core + cube_solver  ──wasm-pack──▶  web/pkg/  (WebAssembly)
    - **3×3** — a real **two-phase (Kociemba) solver** (`cube_solver::kociemba`): it
      orients the pieces into the UD-slice subgroup (phase 1) then solves the
      permutation within it (phase 2), using pruning tables built once at startup.
-     It cracks **any** 3×3 scramble in ≤~25 moves — a near-optimal best path, not the
-     scramble inverse — and runs off-thread in the worker.
+     It cracks **any** 3×3 scramble in about **20 moves** (typically ≤~26, standard
+     face-turn metric) — a near-optimal best path, not the scramble inverse — and
+     runs off-thread in the worker.
    - **2×2** — three independent engines genuinely race: **meet-in-the-middle**
      (exact, bidirectional BFS), **beam search**, and an **island genetic algorithm**;
      the shortest verified solution wins.
@@ -136,7 +137,7 @@ History is stored in an OS-appropriate data directory (Application Support /
 - **Two-phase (Kociemba)** (`cube_solver::kociemba`) — the real 3×3 engine. A
   cubie-level model with two-phase coordinates (twist/flip/UD-slice, then the
   permutation), BFS pruning tables, and IDA* search. Solves any 3×3 scramble in
-  ≤~25 moves and is replay-verified against `cube_core`.
+  about 20 face turns (typically ≤~26) and is replay-verified against `cube_core`.
 - **DeterministicSolver** — bidirectional (meet-in-the-middle) BFS over a
   scramble-aware move set (including wide turns), returning a replay-verified
   shortest path within budget.

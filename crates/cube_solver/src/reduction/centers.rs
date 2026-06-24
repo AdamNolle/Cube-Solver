@@ -1,8 +1,8 @@
 //! Stage 1 of reduction: make every face's center a solid color.
 //!
-//! Centers are solved one face at a time onto a fixed order of faces. By piece
-//! conservation, once five faces' centers are solid the sixth is forced, so we
-//! only actively solve five.
+//! Centers are solved one face at a time over all six faces in a fixed order. By
+//! piece conservation, once five faces' centers are solid the sixth is forced
+//! solid too, so its pass finds nothing to do and returns immediately.
 //!
 //! Each placement is chosen by *propose-and-verify*: we try a family of
 //! center-3-cycle commutators, simulate each on a clone, and commit the first
