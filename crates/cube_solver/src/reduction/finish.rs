@@ -262,6 +262,46 @@ pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Mo
 
     // Parity search. The edges stalled — an odd wing permutation in one or more wing orbits
     // (n-2 wings/edge split into orbits with independent parities; larger cubes have more).
+
+    // Phase 0 — multi-orbit parity via flipper subsets (the big-cube speedup). The wings
+    // split into K=⌊(n-2)/2⌋ orbits {d, n-1-d}; one disturbance flips one orbit's parity —
+    // a slice at depth d on EVEN cubes (slices don't move corners there), a wide for ODD
+    // cubes (slices launder under their fixed centre). Trying all 2^K subsets of the K
+    // orbit flippers lands on whatever combination of orbits is odd in one shot, instead of
+    // walking long cumulative prefixes or scanning the whole repertoire. Bounded to 2^8.
+    {
+        let size = CubeSize::new(n).unwrap();
+        let k = ((n - 2) / 2).min(8);
+        let flippers: Vec<Move> = (1..=k)
+            .map(|d| {
+                if even {
+                    super::slice_from(Face::Right, n, d, 1)
+                } else {
+                    Move::wide(Face::Right, size, d + 1, 1)
+                }
+            })
+            .collect();
+        for mask in 1u32..(1u32 << flippers.len()) {
+            let mut c = base.clone();
+            let mut m = base_moves.clone();
+            for (i, fl) in flippers.iter().enumerate() {
+                if mask & (1 << i) != 0 {
+                    c.apply_move(*fl).ok()?;
+                    m.push(*fl);
+                }
+            }
+            m.extend(solve_centers(&mut c));
+            if !centers_solved(&c) {
+                continue;
+            }
+            m.extend(solve_edges(&mut c));
+            if try_finish(&mut c, &mut m) {
+                *cube = c;
+                return Some(m);
+            }
+        }
+    }
+
     let rep = parity_repertoire(n);
 
     // Phase 1 — cumulative walk (fast, resolves n≤6 and easy n≥7): accumulate disturbances
