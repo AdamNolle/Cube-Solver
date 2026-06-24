@@ -325,6 +325,71 @@ mod tests {
         }
     }
 
+    /// Inspect the n=6 centre stall: which cells are wrong, of what type/chirality, and
+    /// where the matching-colour reservoir pieces sit. Tests the chirality hypothesis.
+    #[test]
+    #[ignore = "diagnostic"]
+    fn n6_centre_stall_inspect() {
+        use super::super::solve_centers;
+        let n = 6usize;
+        // Cell classification on the n×n centre block.
+        let classify = |r: usize, c: usize| -> &'static str {
+            let on_d1 = r == c;
+            let on_d2 = r + c == n - 1;
+            if on_d1 || on_d2 {
+                "X"
+            } else if (r - 1) < (n - 1 - r) {
+                // upper triangle; chirality by which side of the main diagonal
+                if c > r {
+                    "obl-A"
+                } else {
+                    "obl-B"
+                }
+            } else if c < r {
+                "obl-A"
+            } else {
+                "obl-B"
+            }
+        };
+        for seed in [0u64] {
+            let mut cube = scramble(n, 0x700 + seed, 60);
+            solve_centers(&mut cube);
+            for f in Face::ALL {
+                let want = f.color();
+                let mut wrong = Vec::new();
+                for r in 1..n - 1 {
+                    for c in 1..n - 1 {
+                        if cube.color_at(f, r, c) != Some(want) {
+                            wrong.push((r, c, classify(r, c)));
+                        }
+                    }
+                }
+                if !wrong.is_empty() {
+                    eprintln!("seed {seed} face {f:?}: {} wrong: {:?}", wrong.len(), wrong);
+                    // For each wrong cell, where are the `want`-coloured oblique pieces?
+                    for &(_, _, ty) in &wrong {
+                        let mut res = Vec::new();
+                        for g in Face::ALL {
+                            for r in 1..n - 1 {
+                                for c in 1..n - 1 {
+                                    if cube.color_at(g, r, c) == Some(want) && classify(r, c) != "X"
+                                    {
+                                        res.push((format!("{g:?}"), r, c, classify(r, c)));
+                                    }
+                                }
+                            }
+                        }
+                        eprintln!(
+                            "   want={want:?} ({ty}); {}-coloured obliques: {:?}",
+                            want as u8, res
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     /// Does the n=6 centre solver terminate (even if it can't fully solve the obliques)?
     /// A hanging solver is a defect; it must give up via its cap and return.
     #[test]
