@@ -173,84 +173,161 @@ fn wing_repertoire(n: usize) -> Vec<Vec<Move>> {
     out
 }
 
-/// Stage 2: pair every edge's wings into solved composite edges without disturbing
-/// the solved centers. Wings are fungible by color pair, so this mirrors the
-/// center solve: greedily place correctly-oriented wings (preserving centers and
-/// progress), with a directed 2-ply bridge and random-restart escapes for stalls.
-/// On even cubes a final two-wing swap (OLL/PLL parity) may remain for stage 4.
+/// Wing slot index `0..12*(n-2)`: `i = e*(n-2) + (t-1)`.
+fn wing_decode(i: usize, n: usize) -> (usize, usize) {
+    (i / (n - 2), i % (n - 2) + 1)
+}
+
+/// Oriented colour pair on every wing slot, in index order.
+fn all_wing_colors(cube: &StickerCube, n: usize) -> Vec<(Color, Color)> {
+    let total = 12 * (n - 2);
+    (0..total)
+        .map(|i| {
+            let (e, t) = wing_decode(i, n);
+            wing_colors(cube, e, t)
+        })
+        .collect()
+}
+
+/// True if wing slot `i` shows its solved colours in solved orientation.
+fn wing_idx_correct(cube: &StickerCube, n: usize, i: usize) -> bool {
+    let (e, t) = wing_decode(i, n);
+    wing_correct(cube, e, t)
+}
+
+/// Stage 2: pair every edge's wings into solved (home + oriented) composite edges
+/// without disturbing the solved centres. Center-safe wing 3-cycles are precomputed
+/// with the wing slots they change (their support, orientation-aware), so each step
+/// only tries cycles touching a still-wrong wing instead of scanning the whole
+/// repertoire — the same support-filter that made the centre solver fast. Even cubes
+/// can leave an OLL/PLL parity for the 3×3-finish stage to fix.
 pub fn solve_edges(cube: &mut StickerCube) -> Vec<Move> {
     let n = cube.size().get();
     let mut moves = Vec::new();
     if n <= 3 {
-        return moves; // n<=2: no wings; n=3: edges are single pieces, already paired
+        return moves;
     }
-    let repertoire = wing_repertoire(n);
     let total = 12 * (n - 2);
-    let escape_limit = n * n * 40 + 400;
+
+    let solved = StickerCube::solved(cube.size());
+    let solved_wings = all_wing_colors(&solved, n);
+    // Center-safe cycles + the wing slots each changes on a solved cube.
+    let cands: Vec<(Vec<Move>, Vec<usize>)> = wing_repertoire(n)
+        .into_iter()
+        .filter_map(|seq| {
+            let mut c = solved.clone();
+            apply_all(&mut c, &seq);
+            if !centers_solved(&c) {
+                return None;
+            }
+            let after = all_wing_colors(&c, n);
+            let support: Vec<usize> = (0..total)
+                .filter(|&i| after[i] != solved_wings[i])
+                .collect();
+            if support.is_empty() {
+                None
+            } else {
+                Some((seq, support))
+            }
+        })
+        .collect();
+
+    let wrong_set = |cube: &StickerCube| -> std::collections::HashSet<usize> {
+        (0..total)
+            .filter(|&i| !wing_idx_correct(cube, n, i))
+            .collect()
+    };
+
+    let escape_limit = n * n * 10 + 200;
     let mut escapes = 0usize;
     let mut rng = 0xD1B54A32D192ED03u64 ^ (n as u64);
+    let mut iters = 0usize;
+    let iter_cap = total * 60 + 2500; // hard bound so a hard scramble fails fast
 
     while count_correct_wings(cube, n) < total {
+        iters += 1;
+        if iters > iter_cap {
+            return moves;
+        }
         let baseline = count_correct_wings(cube, n);
+        let wrong = wrong_set(cube);
+        let touch: Vec<&(Vec<Move>, Vec<usize>)> = cands
+            .iter()
+            .filter(|(_, s)| s.iter().any(|i| wrong.contains(i)))
+            .collect();
 
-        // 1-ply: a center-safe candidate that raises the correct-wing count.
-        let mut best: Option<&Vec<Move>> = None;
-        let mut best_gain = baseline;
-        for cand in &repertoire {
+        // 1-ply: the FIRST support-touching cycle that raises the correct-wing
+        // count (first-improvement — far fewer trial applications than best-of-all,
+        // which dominated the runtime when many wings are still wrong).
+        let mut found = None;
+        for (seq, _) in &touch {
             let mut trial = cube.clone();
-            apply_all(&mut trial, cand);
-            if !centers_solved(&trial) {
-                continue;
-            }
-            let gain = count_correct_wings(&trial, n);
-            if gain > best_gain {
-                best_gain = gain;
-                best = Some(cand);
+            apply_all(&mut trial, seq);
+            if count_correct_wings(&trial, n) > baseline {
+                found = Some(seq);
+                break;
             }
         }
-        if let Some(cand) = best {
-            apply_all(cube, cand);
-            moves.extend_from_slice(cand);
+        if let Some(seq) = found {
+            apply_all(cube, seq);
+            moves.extend_from_slice(seq);
             escapes = 0;
             continue;
         }
 
-        // Stall: collect center-safe non-regressing candidates, then 2-ply bridge.
         escapes += 1;
         if escapes > escape_limit {
-            return moves; // give up (callers check edges_paired)
+            return moves; // give up; callers verify edges_paired
         }
-        let mut options: Vec<(&Vec<Move>, StickerCube)> = Vec::new();
-        for cand in &repertoire {
-            let mut trial = cube.clone();
-            apply_all(&mut trial, cand);
-            if centers_solved(&trial) && count_correct_wings(&trial, n) >= baseline {
-                options.push((cand, trial));
+
+        // 2-ply bridge over the (small) support-touching set. Bounded so a large
+        // touch set (early, when many wings are wrong) can't make this quadratic.
+        let mut bridged = false;
+        'bridge: for (c1, _) in touch.iter().take(60) {
+            let mut t1 = cube.clone();
+            apply_all(&mut t1, c1);
+            if count_correct_wings(&t1, n) < baseline {
+                continue;
             }
-        }
-        if options.is_empty() {
-            return moves;
-        }
-        let mut pair: Option<(&Vec<Move>, &Vec<Move>)> = None;
-        'two: for (c1, t1) in &options {
-            for c2 in &repertoire {
+            let w1 = wrong_set(&t1);
+            for (c2, s2) in touch.iter().take(60) {
+                if !s2.iter().any(|i| w1.contains(i)) {
+                    continue;
+                }
                 let mut t2 = t1.clone();
                 apply_all(&mut t2, c2);
-                if centers_solved(&t2) && count_correct_wings(&t2, n) > baseline {
-                    pair = Some((c1, c2));
-                    break 'two;
+                if count_correct_wings(&t2, n) > baseline {
+                    apply_all(cube, c1);
+                    moves.extend_from_slice(c1);
+                    apply_all(cube, c2);
+                    moves.extend_from_slice(c2);
+                    bridged = true;
+                    break 'bridge;
                 }
             }
         }
-        if let Some((c1, c2)) = pair {
-            apply_all(cube, c1);
-            moves.extend_from_slice(c1);
-            apply_all(cube, c2);
-            moves.extend_from_slice(c2);
+        if bridged {
             escapes = 0;
             continue;
         }
-        let pick = options[(lcg(&mut rng) as usize) % options.len()].0;
+
+        // Neutral escape: a non-regressing touching cycle to reshuffle.
+        let neutral: Vec<&Vec<Move>> = touch
+            .iter()
+            .filter_map(|(seq, _)| {
+                let mut t = cube.clone();
+                apply_all(&mut t, seq);
+                if count_correct_wings(&t, n) >= baseline {
+                    Some(seq)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if neutral.is_empty() {
+            return moves;
+        }
+        let pick = neutral[(lcg(&mut rng) as usize) % neutral.len()];
         apply_all(cube, pick);
         moves.extend_from_slice(pick);
     }

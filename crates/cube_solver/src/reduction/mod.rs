@@ -15,23 +15,31 @@
 //! deliberately **not** wired into `cube_wasm` or the app, so the shipped solver is
 //! never flaky. The 3×3 two-phase (Kociemba) solver is the lab's real engine.
 //!
-//! DONE & verified: odd-cube fixed-center orientation (`orient_fixed_centers`).
+//! DONE & verified:
+//!   * Centres — `centers_det::solve_centers`: deterministic, exact permutation
+//!     tracking via probe cubes + meta-commutators for the last two centres.
+//!     **4×4 and 5×5 solved** (30/30 and 6/6 random wide scrambles, ~1 s build,
+//!     ms solves). 6×6+ blocked on even-cube oblique-centre coverage.
+//!   * 3×3 finish — `finish::finish_3x3`: extract a 3×3 from the reduced cube, solve
+//!     with the real two-phase engine, replay as outer turns. Detects unsolvable
+//!     (parity) states so the search never hangs.
+//!   * Parity — `finish::solve_reduction` toggles wing-permutation parity with an
+//!     inner slice and re-reduces; this resolves OLL/PLL parity.
+//!   * **First complete end-to-end 4×4 solves work** (centres → edges → finish +
+//!     parity → `is_solved()`).
 //!
-//! WIP — centers (`centers::solve_centers`): a fast support-filtered greedy over a
-//! commutator library (`[slice,face]`, `[slice,slice]`, and wide-move commutators
-//! for the last two centers), with a `|safe|·|touch|` 2-ply bridge. It solves the
-//! easy faces quickly but is **not yet reliable**: it stalls on last-cell reach
-//! gaps and the last-two-centers trapped-piece case. A correct solver needs
-//! deterministic per-cell commutator construction, not greedy search.
-//!
-//! NOT RELIABLE / NOT STARTED: even-cube last-center parity, edge-wing pairing
-//! (`edges::solve_edges` is scaffolding), the reduced-3×3 finish via Kociemba, and
-//! 3×3 OLL/PLL parity for even N. Do not ship until replay-to-solved tests pass for
-//! N ∈ {4,5,6,7}.
+//! WIP: edge-pairing (`edges::solve_edges`) is a support-filtered greedy — fast but
+//! only reliable on some scrambles (it stalls like the old centres greedy did).
+//! Making it deterministic (perm-tracking, like `centers_det`) is the next step to a
+//! fully reliable 4×4. Then: even-cube oblique centres for 6×6+, and generalising
+//! edges/parity to all N.
 
+// Old greedy centre solver, superseded by `centers_det`; kept for its
+// `orient_fixed_centers`/`cube_rotations` helpers.
+#[allow(dead_code)]
 mod centers;
-// Deterministic centre solver (4×4 verified; N≥5 WIP). Not yet wired into the
-// public solver, so its helpers read as dead code in a non-test build.
+// Deterministic centre solver (4×4/5×5 solved). Some helpers read as dead code in a
+// non-test build.
 #[allow(dead_code)]
 mod centers_det;
 mod edges;
@@ -40,8 +48,11 @@ mod finish;
 
 use cube_core::{Axis, CubeState, Face, Move, StickerCube};
 
-pub use centers::solve_centers;
+// The deterministic centre solver is the real one; the old greedy `centers` module
+// is kept only for `orient_fixed_centers`/`cube_rotations` that `centers_det` reuses.
+pub use centers_det::solve_centers;
 pub use edges::{edges_paired, solve_edges};
+pub use finish::{finish_3x3, solve_reduction};
 
 /// The single inner layer `depth` layers in from `face` (depth 0 = the outer
 /// face layer). Sign matches `Move::wide`, so `slice_from(f, n, 0, t) ==

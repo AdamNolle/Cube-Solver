@@ -10,8 +10,9 @@
 //! or two swapped edges) — OLL/PLL parity. That is detected and handled separately;
 //! this module is the parity-free finish.
 
-use crate::kociemba::cube3::solve_sticker;
+use crate::kociemba::cube3::{solve_sticker, sticker_to_cubie};
 use crate::kociemba::search::Solver;
+use crate::kociemba::CubieCube;
 use cube_core::{Color, CubeSize, CubeState, Face, Move, StickerCube};
 
 const COLOR_NAMES: [&str; 6] = ["White", "Yellow", "Green", "Blue", "Orange", "Red"];
@@ -69,12 +70,48 @@ fn recover(m: &Move, size3: CubeSize) -> Option<(Face, i8)> {
     None
 }
 
+/// Parity (true = odd) of a permutation given as `p[i] = where i goes`.
+fn perm_parity(p: &[u8]) -> bool {
+    let mut seen = vec![false; p.len()];
+    let mut odd = false;
+    for i in 0..p.len() {
+        if seen[i] {
+            continue;
+        }
+        let mut j = i;
+        let mut len = 0usize;
+        while !seen[j] {
+            seen[j] = true;
+            j = p[j] as usize;
+            len += 1;
+        }
+        if len.is_multiple_of(2) {
+            odd = !odd; // an even-length cycle is an odd permutation
+        }
+    }
+    odd
+}
+
+/// Whether a 3×3 cubie state is reachable on a real 3×3 (the three standard
+/// invariants). A reduced even cube can violate the edge invariants — that is
+/// OLL/PLL parity, which `solve_reduction` resolves before finishing.
+fn is_solvable(cc: &CubieCube) -> bool {
+    let co: u32 = cc.co.iter().map(|&x| x as u32).sum();
+    let eo: u32 = cc.eo.iter().map(|&x| x as u32).sum();
+    co.is_multiple_of(3) && eo.is_multiple_of(2) && perm_parity(&cc.cp) == perm_parity(&cc.ep)
+}
+
 /// Solve a reduced NxN cube's 3×3 stage. Returns the outer-turn moves (applied to
-/// `cube`), or `None` if the extracted 3×3 is unsolvable (parity — handled elsewhere).
+/// `cube`), or `None` if the extracted 3×3 is unsolvable (parity — handled by
+/// [`solve_reduction`]). The parity check is essential: feeding an impossible state
+/// to the two-phase search would never terminate.
 pub fn finish_3x3(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Move>> {
     let size = cube.size();
     let size3 = CubeSize::new(3).unwrap();
     let cube3 = extract_3x3(cube);
+    if !is_solvable(&sticker_to_cubie(&cube3)) {
+        return None; // OLL/PLL parity
+    }
     let moves3 = solve_sticker(&cube3, solver)?;
     let mut out = Vec::with_capacity(moves3.len());
     for m in &moves3 {
@@ -86,10 +123,64 @@ pub fn finish_3x3(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Move>> 
     Some(out)
 }
 
+/// Full NxN reduction solve: centres → edges → 3×3 finish. On even cubes the reduced
+/// 3×3 can carry OLL/PLL parity (an impossible 3×3 state); we toggle the wing-
+/// permutation parity with one inner slice and re-reduce, which makes it solvable.
+/// Returns the complete move list (applied to `cube`), or `None` if a stage fails.
+pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Move>> {
+    use super::{centers_solved, edges_paired, slice_from, solve_centers, solve_edges};
+    let dbg = std::env::var("RDBG").is_ok();
+    let n = cube.size().get();
+    let mut moves = Vec::new();
+    moves.extend(solve_centers(cube));
+    if !centers_solved(cube) {
+        if dbg {
+            eprintln!("[red] centres FAILED");
+        }
+        return None;
+    }
+    moves.extend(solve_edges(cube));
+    if !edges_paired(cube) {
+        if dbg {
+            eprintln!("[red] edges FAILED (first)");
+        }
+        return None;
+    }
+    for attempt in 0..4 {
+        if let Some(fin) = finish_3x3(cube, solver) {
+            moves.extend(fin);
+            return Some(moves);
+        }
+        if dbg {
+            eprintln!("[red] parity at attempt {attempt}; toggling + re-reducing");
+        }
+        // Parity: an inner slice flips the wing-permutation parity (and scrambles
+        // centres/edges, which we re-solve cheaply), turning the impossible 3×3 into
+        // a solvable one.
+        let slice = slice_from(Face::Right, n, 1, 1);
+        cube.apply_move(slice).ok()?;
+        moves.push(slice);
+        moves.extend(solve_centers(cube));
+        if !centers_solved(cube) {
+            return None;
+        }
+        moves.extend(solve_edges(cube));
+        if !edges_paired(cube) {
+            if dbg {
+                eprintln!("[red] edges FAILED after toggle (attempt {attempt})");
+            }
+            return None;
+        }
+    }
+    if dbg {
+        eprintln!("[red] parity NOT resolved after 4 attempts");
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reduction::{centers_solved, edges_paired, solve_edges};
 
     fn lcg(s: &mut u64) -> u64 {
         *s = s
@@ -111,38 +202,25 @@ mod tests {
         cube
     }
 
-    /// End-to-end 4×4: centres → edges → 3×3 finish, then check fully solved.
-    /// (Seeds with OLL/PLL parity will fail until the parity stage exists.)
+    /// End-to-end 4×4: full reduction (centres → edges → finish + parity), verified
+    /// fully solved by replay.
     #[test]
-    #[ignore = "full 4x4 pipeline probe"]
+    #[ignore = "edge-pairing greedy not yet reliable on all scrambles"]
     fn full_solve_n4() {
         let solver = Solver::new();
         let mut solved = 0;
-        let mut paritied = 0;
-        for seed in 0..8u64 {
+        let mut fails = Vec::new();
+        let t0 = std::time::Instant::now();
+        for seed in 0..16u64 {
             let mut cube = scramble(4, 0x100 + seed, 40);
-            let _ = super::super::centers_det::solve_centers(&mut cube);
-            if !centers_solved(&cube) {
-                println!("seed {seed}: centres failed");
-                continue;
-            }
-            let _ = solve_edges(&mut cube);
-            if !edges_paired(&cube) {
-                println!("seed {seed}: edges not paired");
-                continue;
-            }
-            match finish_3x3(&mut cube, &solver) {
-                Some(_) if cube.is_solved() => {
-                    solved += 1;
-                    println!("seed {seed}: SOLVED");
-                }
-                Some(_) => println!("seed {seed}: finish ran but not solved"),
-                None => {
-                    paritied += 1;
-                    println!("seed {seed}: parity (3x3 unsolvable)");
-                }
+            match solve_reduction(&mut cube, &solver) {
+                Some(_) if cube.is_solved() => solved += 1,
+                _ => fails.push(seed),
             }
         }
-        println!("n=4 full solve: {solved}/8 solved, {paritied} hit parity");
+        println!(
+            "n=4 full solve: {solved}/16 ({:?}); fails {fails:?}",
+            t0.elapsed()
+        );
     }
 }
