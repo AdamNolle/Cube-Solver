@@ -1285,12 +1285,46 @@ class Component extends DCLogic {
       lanesUpdate(this, this.realLanes || [], winnerKey, moves);
     };
 
+    // The solution panel must show the standard face-turn notation (e.g. "U2",
+    // "R'"), not the half-turn-expanded animation list ("U U", "R'"). The solver
+    // returns that as res.notation; render the panel and clipboard from it so the
+    // count and moves match the lane, the proof box and the README.
+    var origShowSolution = inst.showSolution ? inst.showSolution.bind(inst) : null;
+    if (origShowSolution) inst.showSolution = function(){
+      if (this.mode !== 'texture' && this.realNotation && this.realNotation.length && this.ui && this.ui.solCount && this.ui.solChips){
+        this.ui.solCount.textContent = this.realNotation.length;
+        this.ui.solChips.innerHTML = '';
+        this.realNotation.forEach((function(txt){
+          var s = document.createElement('span');
+          s.textContent = txt;
+          s.style.cssText = "font-family:'JetBrains Mono',monospace;font-size:11.5px;padding:3px 7px;background:#F4F3EF;border-radius:6px;color:#3a3933;";
+          this.ui.solChips.appendChild(s);
+        }).bind(this));
+        return;
+      }
+      return origShowSolution();
+    };
+    var origCopyPath = inst.copyPath ? inst.copyPath.bind(inst) : null;
+    if (origCopyPath) inst.copyPath = function(){
+      if (this.realNotation && this.realNotation.length){
+        var txt = this.realNotation.join(' ');
+        try { if (navigator.clipboard) navigator.clipboard.writeText(txt); } catch (e) {}
+        var btn = this.q && this.q('[data-copy]');
+        if (btn){ var o = btn.innerHTML; btn.innerHTML = '<span style="font-size:12px;color:#1BA64B;">Copied ✓</span>'; setTimeout(function(){ btn.innerHTML = o; }, 1400); }
+        return;
+      }
+      return origCopyPath();
+    };
+
     inst.solve = function(){
       if (this.mode !== 'cubie') return origSolve();   // texture (huge) cubes: design path
       if (this.busy || this._solvePending) return;
       // Solve must always do something. On a fresh / already-solved cube
       // (scrambled=false) it used to silently no-op; scramble first, then solve.
       if (!this.scrambled){ if (this.scramble) this.scramble(); if (!this.scrambled) return; }
+      // Clear last solve's real-solver data so a visual (N>3) solve can't show a
+      // stale 3×3 notation/count; the real branch repopulates it via onSolveResult.
+      this.realNotation = null; this.realMoveCount = null;
       // Visual-only cubes (N>3): animate the inverse with HONEST lanes — no real
       // search. Queue is filled synchronously so the loop never finishes early.
       if (this.n > 3 || !this.lab){
@@ -1394,8 +1428,10 @@ class Component extends DCLogic {
       self.realWinner = res.winner; self.realLanes = res.lanes || [];
       self.lastSolution = res.moves;
       // res.moveCount is the face-turn (HTM) count; res.moves is the half-turn-
-      // expanded animation list. Keep the HTM count for the lane/proof so both agree.
+      // expanded animation list. Keep the HTM count + notation for the lane/proof/
+      // solution panel so all three agree (the panel must show U2, not "U U").
       self.realMoveCount = res.moveCount;
+      self.realNotation = res.notation || null;
       updateProof(self, (self.lastScramble||[]).length, res.moveCount);
       self.queue = res.moves.slice();   // fill the queue BEFORE claiming busy
       self.movesDone = 0; self.totalMoves = self.queue.length;
