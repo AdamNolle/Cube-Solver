@@ -325,6 +325,24 @@ mod tests {
         }
     }
 
+    /// Does the n=6 centre solver terminate (even if it can't fully solve the obliques)?
+    /// A hanging solver is a defect; it must give up via its cap and return.
+    #[test]
+    #[ignore = "diagnostic"]
+    fn n6_centres_terminate() {
+        use super::super::{centers_solved, solve_centers};
+        for seed in 0..3u64 {
+            let mut cube = scramble(6, 0x700 + seed, 60);
+            let t0 = std::time::Instant::now();
+            solve_centers(&mut cube);
+            println!(
+                "seed {seed}: centres returned in {:?}, solved={}",
+                t0.elapsed(),
+                centers_solved(&cube)
+            );
+        }
+    }
+
     /// Probe a stalled n=5 edge state: which single disturbance, applied then re-reduced,
     /// reaches all-home? Identifies the operation the two-orbit wing parity needs.
     #[test]
