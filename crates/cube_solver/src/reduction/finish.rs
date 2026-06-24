@@ -123,13 +123,31 @@ pub fn finish_3x3(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Move>> 
     Some(out)
 }
 
-/// Varied parity-disturbance sequences for the toggle loop: single inner slices across
-/// every face and depth, plus a few two-axis combinations. Cycling these (each followed
-/// by a deterministic re-reduction) explores all four OLL×PLL parity classes, where a
-/// single fixed slice would only oscillate between two.
+/// Varied parity-disturbance sequences for the toggle loop, of two complementary kinds.
+/// Face quarter turns are *center-safe* odd permutations of the wings (each quarter turn
+/// 4-cycles the wings of its layer): the edge solver's library is built from 3-cycles and
+/// commutators, all *even*, so it can never flip wing parity on its own; a face turn
+/// supplies the missing odd operation, and because it leaves every centre solid the
+/// re-reduction doesn't launder the flip away (these are tried first, odd cubes only).
+/// Inner slices (every face/depth) plus two-axis combos disturb the wings and centres to
+/// explore the four OLL×PLL parity classes a single fixed slice can't. Cycling these (each
+/// followed by a deterministic re-reduction) reaches a solvable class.
 fn parity_repertoire(n: usize) -> Vec<Vec<Move>> {
     use super::slice_from;
+    let size = cube_core::CubeSize::new(n).expect("size >= 2");
     let mut out: Vec<Vec<Move>> = Vec::new();
+    // Center-safe odd wing flips: a face quarter turn (both directions) on every face.
+    // Only odd cubes need these — even cubes resolve parity deterministically (the dedge
+    // swap), and a face turn also perturbs corner parity, complicating that path. Odd
+    // cubes have no reduction parity, so the face turn cleanly flips the wing parity that
+    // the all-even cycle library cannot.
+    if !n.is_multiple_of(2) {
+        for f in Face::ALL {
+            for t in [1i8, -1] {
+                out.push(vec![Move::face(f, size, t)]);
+            }
+        }
+    }
     for f in [
         Face::Right,
         Face::Up,
