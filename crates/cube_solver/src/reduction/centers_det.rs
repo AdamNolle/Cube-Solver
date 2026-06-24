@@ -22,12 +22,14 @@
 //! once and cycles are composed from them.
 //!
 //! STATUS: **the 4×4 is solved and verified** (30 random wide scrambles →
-//! centres-solved, ~5 s one-time library build, ~30 ms/solve). N ≥ 5 now completes
-//! (the bridge predicts results by composing permutations instead of cloning the
-//! cube, so it no longer grinds) but coverage is still partial — n=5 solves ~2/6
-//! random scrambles; the bigger, multi-orbit last-two-centres band (X- and
-//! +-centres on odd cubes) needs more confined-cycle coverage, and n≥6 still needs
-//! a faster library build. Work in progress; not yet wired into the app.
+//! centres-solved). **4×4 and 5×5 are solved** (30/30 and 6/6 random wide
+//! scrambles), each with a ~1 s one-time cached library build and millisecond
+//! solves. The library is built by composing precomputed single-move permutations
+//! (no cube clones) and deduped by exact centre permutation; "confined" last-two-
+//! centres cycles are classified by COLOUR effect (≤2 faces) — not positional
+//! support, which also churns the restored band — and kept uncapped. n≥6 build is
+//! still being made fast; once it is, the same solver should cover them. WIP; not
+//! yet wired into the app.
 
 use super::centers::{cube_rotations, orient_fixed_centers};
 use super::{apply_all, commutator, conjugate, is_center_cell, slice_from};
@@ -287,42 +289,12 @@ fn base_candidates(n: usize) -> Vec<Vec<Move>> {
 /// meta-commutators `[P, Q]` whose net centre effect is confined to ≤2 faces — the
 /// last-two-centres tools. Sorted shortest-first.
 fn build_library(n: usize) -> Vec<Cyc> {
-    let solved = StickerCube::solved(CubeSize::new(n).expect("size>=2"));
-    let solved_keys = solved.clone_snapshot().stickers().to_vec();
-    let mut by_effect: HashMap<Vec<Color>, Vec<Move>> = HashMap::new();
-
-    let consider = |seq: Vec<Move>, by_effect: &mut HashMap<Vec<Color>, Vec<Move>>| {
-        let mut c = solved.clone();
-        apply_all(&mut c, &seq);
-        let eff = c.clone_snapshot().stickers().to_vec();
-        if eff == solved_keys {
-            return;
-        }
-        match by_effect.get(&eff) {
-            Some(prev) if prev.len() <= seq.len() => {}
-            _ => {
-                by_effect.insert(eff, seq);
-            }
-        }
-    };
-
-    // Base cycles.
-    let base = base_candidates(n);
-    for seq in &base {
-        consider(seq.clone(), &mut by_effect);
-    }
-
-    // Meta-commutators for the last two centres. Use the shortest base cycles that
-    // actually move centres; keep metas whose net centre effect spans ≤2 faces.
-    let mut short: Vec<Vec<Move>> = base
-        .iter()
-        .filter(|s| !changed_center_cells(&solved, n, s).is_empty())
-        .cloned()
-        .collect();
-    short.sort_by_key(|s| s.len());
-    short.dedup();
-    short.truncate(200);
+    let centers = all_center_cells(n);
+    let ncenters = centers.len();
+    let probes = build_probes(n, &centers);
     let size = CubeSize::new(n).expect("size>=2");
+
+    let base = base_candidates(n);
     let face_turns: Vec<Move> = Face::ALL
         .iter()
         .flat_map(|&f| {
@@ -331,118 +303,127 @@ fn build_library(n: usize) -> Vec<Cyc> {
                 .map(move |t| Move::face(f, size, t))
         })
         .collect();
-    for p in &short {
-        for q in &short {
-            let meta = commutator(p, q);
-            let cells = changed_center_cells(&solved, n, &meta);
-            if cells.is_empty() {
-                continue;
+
+    // Decode each elementary move's centre permutation once (with inverses, used by
+    // commutators/conjugates); sequences are composed from these — no cube clones, so
+    // the library build is fast at every N.
+    let mut move_perms: HashMap<MoveKey, Vec<usize>> = HashMap::new();
+    {
+        let add = |m: Move, mp: &mut HashMap<MoveKey, Vec<usize>>| {
+            mp.entry(move_key(&m))
+                .or_insert_with(|| single_move_perm(&centers, &probes, m));
+        };
+        for seq in &base {
+            for &m in seq {
+                add(m, &mut move_perms);
+                add(m.inverse(), &mut move_perms);
             }
-            let faces: HashSet<Face> = cells.iter().map(|c| c.0).collect();
-            if faces.len() <= 2 {
-                // Re-aim each confined meta with a face turn so every target/source
-                // cell pair within the last two faces is covered (a conjugate of a
-                // confined cycle is still confined to the rotated faces).
-                consider(meta.clone(), &mut by_effect);
+        }
+        for &m in &face_turns {
+            add(m, &mut move_perms);
+            add(m.inverse(), &mut move_perms);
+        }
+    }
+
+    let ident: Vec<usize> = (0..ncenters).collect();
+    let mv_key = |m: &[Move]| -> Vec<String> { m.iter().map(|x| x.notation(size)).collect() };
+    // Faces whose COLOUR changes under a permutation (a cell receives a piece from a
+    // different face). This — not the positional support, which also churns the
+    // restored frozen band — is how "confined" (<=2-face) last-two-centres cycles are
+    // identified and kept uncapped.
+    let color_faces = |p: &[usize]| -> usize {
+        p.iter()
+            .enumerate()
+            .filter(|(i, &src)| centers[src].0 != centers[*i].0)
+            .map(|(i, _)| centers[i].0)
+            .collect::<HashSet<_>>()
+            .len()
+    };
+
+    // Dedup by exact centre permutation (composed, no snapshots).
+    let mut by_perm: HashMap<Vec<usize>, Vec<Move>> = HashMap::new();
+    {
+        let consider = |seq: &[Move], by_perm: &mut HashMap<Vec<usize>, Vec<Move>>| {
+            let p = seq_perm(&move_perms, ncenters, seq);
+            if p == ident {
+                return;
+            }
+            let better = match by_perm.get(&p) {
+                Some(prev) => {
+                    seq.len() < prev.len()
+                        || (seq.len() == prev.len() && mv_key(seq) < mv_key(prev))
+                }
+                None => true,
+            };
+            if better {
+                by_perm.insert(p, seq.to_vec());
+            }
+        };
+        for seq in &base {
+            consider(seq, &mut by_perm);
+        }
+
+        // Meta-commutators for the last two centres, seeded by the shortest raw base
+        // cycles that move centres; keep those CONFINED to <=2 faces by colour and
+        // re-aim each with a face turn for full target/source coverage.
+        let mut short: Vec<Vec<Move>> = base
+            .iter()
+            .filter(|s| seq_perm(&move_perms, ncenters, s) != ident)
+            .cloned()
+            .collect();
+        short.sort_by_key(|s| (s.len(), mv_key(s)));
+        short.dedup();
+        short.truncate(200);
+
+        for p_seq in &short {
+            for q_seq in &short {
+                let meta = commutator(p_seq, q_seq);
+                let mp = seq_perm(&move_perms, ncenters, &meta);
+                if mp == ident || color_faces(&mp) > 2 {
+                    continue;
+                }
+                consider(&meta, &mut by_perm);
                 for ft in &face_turns {
-                    consider(conjugate(&[*ft], &meta), &mut by_effect);
+                    consider(&conjugate(&[*ft], &meta), &mut by_perm);
                 }
             }
         }
     }
 
-    let centers = all_center_cells(n);
-    // Reduce each distinct effect to (moves, support) cheaply (no perm yet).
-    let support_of = |eff: &[Color]| -> Vec<Cell> {
-        let mut support = Vec::new();
-        for &f in &Face::ALL {
-            for r in 0..n {
-                for col in 0..n {
-                    if is_center_cell(r, col, n)
-                        && eff[face_ord(f) * n * n + r * n + col] != f.color()
-                    {
-                        support.push((f, r, col));
-                    }
-                }
-            }
-        }
-        support
-    };
-    let mut raw: Vec<(Vec<Move>, Vec<Cell>)> = by_effect
-        .into_iter()
-        .map(|(eff, moves)| {
-            let s = support_of(&eff);
-            (moves, s)
-        })
-        .filter(|(_, s)| !s.is_empty())
-        .collect();
-    // Keep a surgical, well-covering set: prefer few-cell, short cycles. "Confined"
-    // cycles (≤2 faces) are the last-two-centres tools; keep generously. Perms are
-    // computed only for the kept set (deterministic placement is a lookup, so a
-    // larger library costs build time, not solve time).
-    let n_faces = |s: &[Cell]| s.iter().map(|x| x.0).collect::<HashSet<_>>().len();
-    // Fully deterministic order (HashMap iteration is not), so the library — and
-    // therefore coverage — is identical every run.
-    let size = CubeSize::new(n).expect("size>=2");
-    let sup_key = |s: &[Cell]| -> Vec<(usize, usize, usize)> {
-        let mut v: Vec<_> = s.iter().map(|c| (face_ord(c.0), c.1, c.2)).collect();
-        v.sort();
-        v
-    };
-    let mv_key = |m: &[Move]| -> Vec<String> { m.iter().map(|x| x.notation(size)).collect() };
-    raw.sort_by(|(ma, sa), (mb, sb)| {
-        (sa.len(), ma.len())
-            .cmp(&(sb.len(), mb.len()))
-            .then_with(|| sup_key(sa).cmp(&sup_key(sb)))
+    // Keep every colour-confined (<=2-face) cycle plus a generous cap of general
+    // cycles, in a fully deterministic order so coverage is identical every run.
+    let support_len = |p: &[usize]| p.iter().enumerate().filter(|(i, &s)| *i != s).count();
+    let mut raw: Vec<(Vec<usize>, Vec<Move>)> = by_perm.into_iter().collect();
+    raw.sort_by(|(pa, ma), (pb, mb)| {
+        (support_len(pa), ma.len())
+            .cmp(&(support_len(pb), mb.len()))
+            .then_with(|| pa.cmp(pb))
             .then_with(|| mv_key(ma).cmp(&mv_key(mb)))
     });
-    // Keep EVERY confined (≤2-face) cycle — those are the scarce last-two-centres
-    // tools — and a generous cap of general cycles for the first four faces.
     let cap_gen = 7000usize;
-    let mut kept: Vec<(Vec<Move>, Vec<Cell>)> = Vec::new();
     let mut ngen = 0;
-    for (m, s) in raw {
-        if n_faces(&s) <= 2 {
-            kept.push((m, s));
-        } else if ngen < cap_gen {
+    let mut out: Vec<Cyc> = Vec::new();
+    for (p, moves) in raw {
+        if color_faces(&p) > 2 {
+            if ngen >= cap_gen {
+                continue;
+            }
             ngen += 1;
-            kept.push((m, s));
         }
-    }
-
-    // Precompute each distinct elementary move's centre permutation once, then get
-    // every cycle's permutation by composing them (array ops) — far cheaper than
-    // re-applying each cycle to probe cubes.
-    let probes = build_probes(n, &centers);
-    let mut move_perms: HashMap<MoveKey, Vec<usize>> = HashMap::new();
-    for (moves, _) in &kept {
-        for m in moves {
-            move_perms
-                .entry(move_key(m))
-                .or_insert_with(|| single_move_perm(&centers, &probes, *m));
+        let mut support = Vec::new();
+        let mut perm = HashMap::new();
+        for (i, &src_i) in p.iter().enumerate() {
+            if src_i != i {
+                support.push(centers[i]);
+                perm.insert(centers[i], centers[src_i]);
+            }
         }
+        out.push(Cyc {
+            moves,
+            support,
+            perm,
+        });
     }
-    let ncenters = centers.len();
-    let mut out: Vec<Cyc> = kept
-        .into_iter()
-        .map(|(moves, _approx_support)| {
-            let p = seq_perm(&move_perms, ncenters, &moves);
-            let mut support = Vec::new();
-            let mut perm = HashMap::new();
-            for (i, &src_i) in p.iter().enumerate() {
-                if src_i != i {
-                    support.push(centers[i]);
-                    perm.insert(centers[i], centers[src_i]);
-                }
-            }
-            Cyc {
-                moves,
-                support,
-                perm,
-            }
-        })
-        .filter(|c| !c.support.is_empty())
-        .collect();
     out.sort_by_key(|c| (c.support.len(), c.moves.len()));
     out
 }
