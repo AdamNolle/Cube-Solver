@@ -216,62 +216,91 @@ pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Mo
         return None;
     }
 
-    // One unified loop. Each pass drives edges toward *all-home*; if reached, the 3×3 is
-    // finished — and if that all-home 3×3 is unsolvable (only possible cause: odd corners,
-    // since all-home means no dedge flips and an even dedge permutation) we re-drive edges
-    // to a target with two edges *swapped*, flipping the dedge-permutation parity to match
-    // the corners (an even wing permutation for even n, hence reachable). When a pass
-    // can't reach all-home (an odd wing permutation, or a rare coverage stall), we disturb
-    // the wings with the next entry of a *varied* slice repertoire and re-reduce: varying
-    // the disturbance both flips wing parity and explores re-reductions that sidestep a
-    // coverage stall. Odd cubes have no reduction parity, so they finish on the first pass.
     let home = home_targets(n);
-    let rep = parity_repertoire(n);
     let even = n.is_multiple_of(2);
-    for attempt in 0..=rep.len() {
-        if attempt > 0 {
-            for &m in &rep[attempt - 1] {
-                cube.apply_move(m).ok()?;
-                moves.push(m);
-            }
-            moves.extend(solve_centers(cube));
-            if !centers_solved(cube) {
-                if dbg {
-                    eprintln!("[red] centres FAILED after disturbance (attempt {attempt})");
-                }
-                return None;
-            }
-        }
-        moves.extend(solve_edges(cube));
+    moves.extend(solve_edges(cube));
+
+    // Finish from the current state if edges are all-home: solve the reduced 3×3, and on an
+    // even cube clear an odd-corner PLL by re-driving edges to a two-dedges-swapped target
+    // (odd dedge perm to match the corners; reachable since n-2 is even). Extends `extra`
+    // and returns true on success.
+    let try_finish = |cube: &mut StickerCube, extra: &mut Vec<Move>| -> bool {
         if !at_target(cube, &home) {
-            if dbg {
-                eprintln!("[red] not all-home at attempt {attempt}; disturbing");
-            }
-            continue;
+            return false;
         }
         if let Some(fin) = finish_3x3(cube, solver) {
-            moves.extend(fin);
-            return Some(moves);
+            extra.extend(fin);
+            return true;
         }
-        if !even {
-            continue; // odd cubes never carry parity; a re-reduction will solve
-        }
-        // All-home but unsolvable ⇒ odd corners. Swap two dedges to flip PLL parity.
-        if dbg {
-            eprintln!("[red] all-home odd corners at attempt {attempt}; swapping two dedges");
-        }
-        let swapped = home_swapped_target(n, 0, 1);
-        moves.extend(solve_to_target(cube, &swapped));
-        if at_target(cube, &swapped) {
-            if let Some(fin) = finish_3x3(cube, solver) {
-                moves.extend(fin);
-                return Some(moves);
+        if even {
+            let swapped = home_swapped_target(n, 0, 1);
+            extra.extend(solve_to_target(cube, &swapped));
+            if at_target(cube, &swapped) {
+                if let Some(fin) = finish_3x3(cube, solver) {
+                    extra.extend(fin);
+                    return true;
+                }
             }
         }
-        // Swap didn't resolve it (shouldn't happen); the next disturbance will retry.
+        false
+    };
+
+    if try_finish(cube, &mut moves) {
+        return Some(moves);
     }
+
+    // Parity search. The edges stalled — an odd wing permutation in one or more wing orbits
+    // (n-2 wings/edge split into orbits with independent parities; larger cubes have more).
+    let base = cube.clone();
+    let base_moves = moves;
+    let rep = parity_repertoire(n);
+
+    // Phase 1 — cumulative walk (fast, resolves n≤6 and easy n≥7): accumulate disturbances
+    // and re-check after each, so prefixes of the walk cover multi-orbit combinations.
+    {
+        let mut c = base.clone();
+        let mut m = base_moves.clone();
+        for dist in &rep {
+            for &mv in dist {
+                c.apply_move(mv).ok()?;
+                m.push(mv);
+            }
+            m.extend(solve_centers(&mut c));
+            if !centers_solved(&c) {
+                continue;
+            }
+            m.extend(solve_edges(&mut c));
+            if try_finish(&mut c, &mut m) {
+                *cube = c;
+                return Some(m);
+            }
+        }
+    }
+
+    // Phase 2 — non-cumulative singles: try each disturbance from THIS SAME stalled state.
+    // A single face/wide/slice flips a specific orbit's parity, but only relative to the
+    // stall; stacking disturbances (Phase 1) never tests the lone flip a single odd orbit
+    // needs. This catches the cases the cumulative walk's fixed path misses.
+    for dist in &rep {
+        let mut c = base.clone();
+        let mut m = base_moves.clone();
+        for &mv in dist {
+            c.apply_move(mv).ok()?;
+            m.push(mv);
+        }
+        m.extend(solve_centers(&mut c));
+        if !centers_solved(&c) {
+            continue;
+        }
+        m.extend(solve_edges(&mut c));
+        if try_finish(&mut c, &mut m) {
+            *cube = c;
+            return Some(m);
+        }
+    }
+
     if dbg {
-        eprintln!("[red] NOT resolved after {} attempts", rep.len() + 1);
+        eprintln!("[red] NOT resolved after {} disturbances", rep.len());
     }
     None
 }
