@@ -146,6 +146,12 @@ fn parity_repertoire(n: usize) -> Vec<Vec<Move>> {
             for t in [1i8, -1] {
                 out.push(vec![Move::face(f, size, t)]);
             }
+            // Wide turns (face + inner slices) flip *one* off-middle wing orbit
+            // independently — the two-orbit parity a lone face turn or slice can't
+            // separate (an odd cube's t=1 and t=3 wings can carry different parities).
+            for w in 2..=n - 1 {
+                out.push(vec![Move::wide(f, size, w, 1)]);
+            }
         }
     }
     for f in [
@@ -319,6 +325,68 @@ mod tests {
         }
     }
 
+    /// Probe a stalled n=5 edge state: which single disturbance, applied then re-reduced,
+    /// reaches all-home? Identifies the operation the two-orbit wing parity needs.
+    #[test]
+    #[ignore = "diagnostic"]
+    fn n5_stall_probe() {
+        use super::super::edges_det::{at_target, home_targets};
+        use super::super::{centers_solved, slice_from, solve_centers, solve_edges};
+        let n = 5usize;
+        let size = CubeSize::new(n).unwrap();
+        let home = home_targets(n);
+        for seed in [5u64, 8] {
+            let mut cube = scramble(n, 0x500 + seed, n * 15);
+            solve_centers(&mut cube);
+            solve_edges(&mut cube);
+            let base = cube.clone();
+            let at_home0 = at_target(&base, &home);
+            println!("seed {seed}: initial all-home={at_home0}");
+            // Candidate disturbances.
+            let mut cands: Vec<(String, Vec<Move>)> = Vec::new();
+            for f in Face::ALL {
+                for t in [1i8, -1, 2] {
+                    cands.push((format!("face {f:?} {t}"), vec![Move::face(f, size, t)]));
+                }
+                for d in 1..=n - 2 {
+                    cands.push((format!("slice {f:?} d{d}"), vec![slice_from(f, n, d, 1)]));
+                }
+                for w in 2..=n - 1 {
+                    cands.push((format!("wide {f:?} w{w}"), vec![Move::wide(f, size, w, 1)]));
+                }
+            }
+            // A few face+slice combos (flip one orbit independently?).
+            for f in [Face::Right, Face::Up, Face::Front] {
+                for d in 1..=n - 2 {
+                    cands.push((
+                        format!("face {f:?}+slice d{d}"),
+                        vec![Move::face(f, size, 1), slice_from(f, n, d, 1)],
+                    ));
+                }
+            }
+            let mut wins = Vec::new();
+            for (name, dist) in &cands {
+                let mut c = base.clone();
+                for &m in dist {
+                    c.apply_move(m).unwrap();
+                }
+                solve_centers(&mut c);
+                if !centers_solved(&c) {
+                    continue;
+                }
+                solve_edges(&mut c);
+                if at_target(&c, &home) {
+                    wins.push(name.clone());
+                }
+            }
+            println!(
+                "seed {seed}: {} disturbances reach all-home: {:?}",
+                wins.len(),
+                wins
+            );
+        }
+    }
+
     /// End-to-end 4×4: full reduction (centres → edges → finish + parity), verified
     /// fully solved by replay over many scrambles.
     #[test]
@@ -344,18 +412,17 @@ mod tests {
     }
 
     /// End-to-end across sizes: even cubes exercise the deterministic parity path, odd
-    /// cubes the parity-free path. Verified fully solved by replay.
+    /// cubes the parity-free path. Verified fully solved by replay. 4×4 and 5×5 are fully
+    /// reliable; n=6 centres (even obliques) and n≥7 are not yet covered.
     #[test]
     #[ignore = "slow; run explicitly"]
     fn full_solve_sizes() {
-        // n=4 is fully reliable; n=5 (odd off-middle wing parity) is WIP; n=6 centres
-        // (even obliques) and n≥7 are not yet covered.
         let solver = Solver::new();
         for n in [4usize, 5] {
             let mut solved = 0;
             let mut fails = Vec::new();
             let t0 = std::time::Instant::now();
-            let trials = 12u64;
+            let trials = 30u64;
             for seed in 0..trials {
                 let mut cube = scramble(n, 0x500 + seed, n * 15);
                 match solve_reduction(&mut cube, &solver) {
@@ -368,6 +435,7 @@ mod tests {
                 "n={n} full solve: {solved}/{trials} ({:?}); fails {fails:?}",
                 t0.elapsed()
             );
+            assert_eq!(solved, trials, "n={n} not fully reliable: fails {fails:?}");
         }
     }
 }
