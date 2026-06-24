@@ -1136,7 +1136,10 @@ class Component extends DCLogic {
 
   // ===== wire the real Rust solver (WASM) into the design =====
   function wireRealSolver(inst){
-    const KEYS = { deterministic:'det', beam:'beam', evolution:'evo' };
+    // Engine id -> lane slot. The 3×3 is solved by the two-phase (Kociemba) solver,
+    // which reuses the first ('det') lane slot — relabeled "Two-phase" for N=3 by
+    // applyEngineLabels(), with the other two lanes hidden (they only run for 2×2).
+    const KEYS = { deterministic:'det', beam:'beam', evolution:'evo', kociemba:'det' };
     const origScramble = inst.scramble.bind(inst);
     const origSolve = inst.solve.bind(inst);
     const origReset = inst.resetSolved ? inst.resetSolved.bind(inst) : null;
@@ -1459,6 +1462,19 @@ class Component extends DCLogic {
     var origUpdateLanes = inst.updateLanes ? inst.updateLanes.bind(inst) : null;
     if (origUpdateLanes) inst.updateLanes = function(f){
       if (this._visualSolve){ setLanesVisual(this); return; }
+      // The 3×3 two-phase solve finishes before the replay even starts, so don't
+      // fabricate per-frame beam-search node/generation telemetry on its lane —
+      // that would contradict the "two-phase" label. Show it as found; finishLanes
+      // then stamps the verified move count.
+      if ((this.n||3) === 3){
+        var el = this.root.querySelector('[data-lane="det"]');
+        if (el){
+          var stat = el.querySelector('[data-stat]'), fill = el.querySelector('[data-fill]');
+          if (stat) stat.textContent = 'solution found — replaying';
+          if (fill) fill.style.width = '100%';
+        }
+        return;
+      }
       return origUpdateLanes(f);
     };
 
@@ -1586,6 +1602,10 @@ class Component extends DCLogic {
       self.root.querySelectorAll('span').forEach(function(s){
         if (s.textContent && s.textContent.trim()==='3 strategies, in parallel'){
           s.textContent = '3 strategies on the cube state — none see the scramble';
+          s.setAttribute('data-race-sub','');
+        }
+        if (s.textContent && s.textContent.trim()==='SOLVER RACE'){
+          s.setAttribute('data-race-head','');
         }
       });
       var DESC = { det:'Searches forward from the scrambled state and backward from solved until the paths meet — exact & shortest.',
@@ -1632,7 +1652,45 @@ class Component extends DCLogic {
     // SOLVE_MAX_DEPTH: reach of the legacy search (2x2). SOLVE_REAL_DEPTH: the 3x3
     // now uses the two-phase (Kociemba) solver, which cracks ANY scramble.
     var SOLVE_MAX_N = 3, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
+
+    // Make the "Solver Race" panel honest about which engine actually runs:
+    //   • 2×2 — three real engines race (meet-in-the-middle, beam, island genetic);
+    //   • 3×3 — the two-phase (Kociemba) solver, shown as one near-optimal lane with
+    //           the other two hidden (they don't run for the 3×3);
+    //   • N>3 — no real search (visual playback), labels restored.
+    function laneLabelEl(el){ return (el && el.firstElementChild) ? el.firstElementChild.children[1] : null; }
+    function applyEngineLabels(self){
+      var n = self.n || 3;
+      if (!self._origLane){
+        self._origLane = {};
+        ['det','beam','evo'].forEach(function(k){
+          var lab = laneLabelEl(self.root.querySelector('[data-lane="'+k+'"]'));
+          self._origLane[k] = lab ? lab.textContent : '';
+        });
+      }
+      var twoPhase = (n === 3);
+      // Hide the two non-running lanes on the 3×3; show all three otherwise.
+      ['beam','evo'].forEach(function(k){
+        var el = self.root.querySelector('[data-lane="'+k+'"]'); if (el) el.style.display = twoPhase ? 'none' : '';
+      });
+      var detEl = self.root.querySelector('[data-lane="det"]');
+      var detLab = laneLabelEl(detEl);
+      var detDesc = detEl && detEl.querySelector('[data-lane-desc]');
+      if (detLab) detLab.textContent = twoPhase ? 'Two-phase (Kociemba)' : (self._origLane.det || 'Meet-in-the-middle');
+      if (detDesc) detDesc.textContent = twoPhase
+        ? 'Orients corners and edges into the UD-slice subgroup, then solves the permutation within it — a near-optimal solution for any 3×3 scramble.'
+        : 'Searches forward from the scrambled state and backward from solved until the paths meet — exact & shortest.';
+      var head = self.root.querySelector('[data-race-head]');
+      var sub = self.root.querySelector('[data-race-sub]');
+      if (head) head.textContent = twoPhase ? 'BEST-PATH SOLVER' : 'SOLVER RACE';
+      if (sub) sub.textContent = twoPhase
+        ? 'two-phase solver — near-optimal, never the scramble inverse'
+        : '3 strategies on the cube state — none see the scramble';
+    }
+    inst._applyEngineLabels = applyEngineLabels;
+
     function refreshSolvability(self){
+      applyEngineLabels(self);
       var ban = self.root.querySelector('[data-solvability]'); if(!ban) return;
       var n = self.n||3, d = self.scrambleDepth||6;
       // Cap the scramble-depth slider to the exact solver's reach for solvable
