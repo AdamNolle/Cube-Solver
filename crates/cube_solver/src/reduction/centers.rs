@@ -11,7 +11,7 @@
 //! regardless of commutator sign subtleties.
 
 use super::*;
-use cube_core::{Color, CubeSize, CubeState, Face, Move, StickerCube};
+use cube_core::{Color, CubeSize, Face, Move, StickerCube};
 use std::collections::{HashSet, VecDeque};
 
 /// True if `n` is odd (the cube has fixed face centers that must be oriented).
@@ -81,94 +81,196 @@ pub(crate) fn orient_fixed_centers(cube: &mut StickerCube) -> Vec<Move> {
     Vec::new()
 }
 
-/// Faces to actively solve, in order. The sixth (Left) is forced by
-/// conservation. Solving the two opposite faces (Front/Back, then Right) last
-/// means the working face always has solid adjacent faces to use as setup moves.
-const SOLVE_ORDER: [Face; 5] = [Face::Up, Face::Down, Face::Front, Face::Back, Face::Right];
+/// A center cell address `(face, row, col)`.
+type Cell = (Face, usize, usize);
 
-fn adjacents(face: Face) -> [Face; 4] {
-    match face {
-        Face::Up | Face::Down => [Face::Front, Face::Back, Face::Left, Face::Right],
-        Face::Front | Face::Back => [Face::Up, Face::Down, Face::Left, Face::Right],
-        Face::Left | Face::Right => [Face::Up, Face::Down, Face::Front, Face::Back],
-    }
+/// A center-moving sequence together with the set of center cells it changes (its
+/// *support*) on a solved cube. Precomputed once so the solver can pick a cycle by
+/// cheap set-membership instead of cloning the cube against the whole repertoire
+/// every step (which is what made the old greedy O(repertoire²)).
+struct CenterCycle {
+    moves: Vec<Move>,
+    support: Vec<Cell>,
+    /// True if the sequence uses a wide (multi-layer) turn. These reach the
+    /// last-two-centers 3-cycles confined to two opposite faces, but they make the
+    /// greedy wander on the easy early faces, so we unlock them only at the end.
+    wide: bool,
 }
 
-/// The two opposite neighbour pairs of `face`, one per axis perpendicular to its
-/// normal. A slice from each pair moves `face`'s own center pieces.
-fn perp_pairs(face: Face) -> ([Face; 2], [Face; 2]) {
-    match face {
-        Face::Up | Face::Down => ([Face::Left, Face::Right], [Face::Front, Face::Back]),
-        Face::Front | Face::Back => ([Face::Left, Face::Right], [Face::Up, Face::Down]),
-        Face::Left | Face::Right => ([Face::Front, Face::Back], [Face::Up, Face::Down]),
-    }
+/// Stable 0..6 index of a face (its position in `Face::ALL`), for ordering cells.
+fn face_ord(f: Face) -> usize {
+    Face::ALL.iter().position(|&x| x == f).unwrap()
 }
 
-/// Build candidate center-3-cycle commutators for working face `w`, allowing
-/// conjugation by `setup_faces` (the already-solid faces, whose turns are safe).
-fn candidates(w: Face, n: usize, setup_faces: &[Face]) -> Vec<Vec<Move>> {
-    let mut out = Vec::new();
-    // On odd cubes the middle slice carries the fixed centers; never use it, so
-    // the (already oriented) fixed centers are preserved throughout.
-    let mid = (n - 1) / 2;
-    let usable = |d: usize| !(is_odd(n) && d == mid);
-    for dir in adjacents(w) {
-        for d in (1..=(n - 2)).filter(|&d| usable(d)) {
-            for it in [1i8, -1] {
-                for wt in [1i8, -1] {
-                    let base = commutator(&[slice_from(dir, n, d, it)], &[turn(w, n, wt)]);
-                    out.push(base.clone());
-                    // Conjugate by working-face rotations.
-                    for k in 1..4i8 {
-                        out.push(conjugate(&[turn(w, n, k)], &base));
-                    }
-                    // Conjugate by a solid neighbour's rotation (safe setup that
-                    // can shuttle pieces in from the opposite face).
-                    for &sf in setup_faces {
-                        for s in [1i8, -1, 2] {
-                            out.push(conjugate(&[turn(sf, n, s)], &base));
-                        }
-                    }
-                }
+/// All center cells of a face, row-major.
+fn face_center_cells(face: Face, n: usize) -> Vec<Cell> {
+    let mut v = Vec::new();
+    for r in 0..n {
+        for c in 0..n {
+            if is_center_cell(r, c, n) {
+                v.push((face, r, c));
+            }
+        }
+    }
+    v
+}
+
+/// Build the cycle library directly from short commutators across all axes:
+///   * `[inner-slice, face-turn]` — the canonical center 3-cycle, and the only
+///     family that can cycle pieces *between two faces* (it disturbs a third face
+///     mid-sequence and restores it — exactly what solving the last two centers
+///     requires), and
+///   * `[inner-slice, inner-slice]` on perpendicular axes — pure center 3-cycles
+///     that never touch edges/corners,
+///
+/// each optionally re-aimed by conjugating with a face turn.
+///
+/// Every generated sequence is keyed by its full effect (the post-apply sticker
+/// snapshot), so distinct permutations — including a 3-cycle and its inverse — are
+/// all kept while exact duplicates collapse to the shortest sequence. No-ops are
+/// dropped. Sorted shortest-first so the solver prefers cheap fixes. `support` is
+/// the set of center cells the sequence changes (its net effect).
+fn center_cycle_library(n: usize) -> Vec<CenterCycle> {
+    let size = CubeSize::new(n).expect("size>=2");
+    let solved = StickerCube::solved(size);
+    let solved_keys = solved.clone_snapshot().stickers().to_vec();
+
+    // Generators. `movers` are the pieces-between-faces tools: single inner slices
+    // AND wide turns (outer face + inner layers together). Wide-turn commutators are
+    // what generate the last-two-centers 3-cycles confined to two opposite faces —
+    // a single inner slice can't reach those.
+    let mut slices: Vec<Move> = Vec::new();
+    for f in Face::ALL {
+        for d in 1..=n - 2 {
+            for s in [1i8, -1] {
+                slices.push(slice_from(f, n, d, s));
+            }
+        }
+        for w in 2..=(n - 1).min(3) {
+            for s in [1i8, -1] {
+                slices.push(Move::wide(f, size, w, s));
+            }
+        }
+    }
+    let faces: Vec<Move> = Face::ALL
+        .iter()
+        .flat_map(|&f| [1i8, -1].into_iter().map(move |t| Move::face(f, size, t)))
+        .collect();
+
+    // Collect candidate sequences.
+    let mut candidates: Vec<Vec<Move>> = Vec::new();
+    for s in &slices {
+        for f in &faces {
+            let base = commutator(&[*s], &[*f]);
+            candidates.push(base.clone());
+            for setup in &faces {
+                candidates.push(conjugate(&[*setup], &base));
+            }
+        }
+    }
+    for (i, a) in slices.iter().enumerate() {
+        for b in &slices[i + 1..] {
+            if a.axis == b.axis {
+                continue; // perpendicular axes only
+            }
+            let base = commutator(&[*a], &[*b]);
+            candidates.push(base.clone());
+            for setup in &faces {
+                candidates.push(conjugate(&[*setup], &base));
             }
         }
     }
 
-    // Canonical center 3-cycle: a commutator of two perpendicular inner slices.
-    // This is the tool that exchanges pieces between opposite faces on the final
-    // working face without a face turn.
-    let (pair_a, pair_b) = perp_pairs(w);
-    for &fa in &pair_a {
-        for &fb in &pair_b {
-            for da in (1..=(n - 2)).filter(|&d| usable(d)) {
-                for db in (1..=(n - 2)).filter(|&d| usable(d)) {
-                    for ta in [1i8, -1] {
-                        for tb in [1i8, -1] {
-                            let base = commutator(
-                                &[slice_from(fa, n, da, ta)],
-                                &[slice_from(fb, n, db, tb)],
-                            );
-                            out.push(base.clone());
-                            for k in 1..4i8 {
-                                out.push(conjugate(&[turn(w, n, k)], &base));
-                            }
-                            for &sf in setup_faces {
-                                for s in [1i8, -1, 2] {
-                                    out.push(conjugate(&[turn(sf, n, s)], &base));
-                                }
-                            }
-                        }
-                    }
-                }
+    // Dedup by net effect, keeping the shortest sequence per distinct permutation.
+    let mut best: std::collections::HashMap<Vec<Color>, Vec<Move>> =
+        std::collections::HashMap::new();
+    for seq in candidates {
+        let mut c = solved.clone();
+        apply_all(&mut c, &seq);
+        let effect = c.clone_snapshot().stickers().to_vec();
+        if effect == solved_keys {
+            continue; // no net effect
+        }
+        match best.get(&effect) {
+            Some(prev) if prev.len() <= seq.len() => {}
+            _ => {
+                best.insert(effect, seq);
             }
         }
     }
 
+    let mut out: Vec<CenterCycle> = best
+        .into_iter()
+        .map(|(effect, moves)| {
+            let mut support = Vec::new();
+            for f in Face::ALL {
+                for r in 0..n {
+                    for col in 0..n {
+                        if is_center_cell(r, col, n)
+                            && effect[face_ord(f) * n * n + r * n + col] != f.color()
+                        {
+                            support.push((f, r, col));
+                        }
+                    }
+                }
+            }
+            let wide = moves.iter().any(|m| m.layer_end > m.layer_start);
+            CenterCycle {
+                moves,
+                support,
+                wide,
+            }
+        })
+        .filter(|cy| !cy.support.is_empty()) // must touch at least one center cell
+        .collect();
+    out.sort_by_key(|c| c.moves.len());
     out
 }
 
+/// The (up to) 24 whole-cube rotations as full-width move sequences. Used as
+/// conjugation setups so a single base center 3-cycle can be aimed at every
+/// center cell of every face (one shape × 24 orientations × depths × dirs).
+pub(crate) fn cube_rotations(n: usize) -> Vec<Vec<Move>> {
+    let size = CubeSize::new(n).expect("size>=2");
+    let gens = [
+        Move::wide(Face::Right, size, n, 1),
+        Move::wide(Face::Up, size, n, 1),
+        Move::wide(Face::Front, size, n, 1),
+    ];
+    let solved = StickerCube::solved(size);
+    let key = |c: &StickerCube| c.clone_snapshot().stickers().to_vec();
+    let mut seen: HashSet<Vec<Color>> = HashSet::new();
+    let mut out: Vec<Vec<Move>> = vec![Vec::new()];
+    seen.insert(key(&solved));
+    let mut queue: VecDeque<(StickerCube, Vec<Move>)> = VecDeque::new();
+    queue.push_back((solved, Vec::new()));
+    while let Some((state, path)) = queue.pop_front() {
+        if path.len() >= 6 {
+            continue;
+        }
+        for mv in gens {
+            let mut next = state.clone();
+            next.apply_move(mv).unwrap();
+            if seen.insert(key(&next)) {
+                let mut p = path.clone();
+                p.push(mv);
+                out.push(p.clone());
+                queue.push_back((next, p));
+            }
+        }
+    }
+    out
+}
+
+
 /// Solve all six centers. Returns the move sequence; on return the supplied
 /// cube has been mutated to the centers-solved state.
+///
+/// Faces are finalized in opposite-pair order; each face's center cells are
+/// filled one (or more) at a time by the first repertoire 3-cycle that adds a
+/// correct cell without disturbing any already-correct cell (of this face) or
+/// any finalized face. Because same-color center pieces are fungible there is no
+/// permutation parity, so per-piece 3-cycling always completes.
 pub fn solve_centers(cube: &mut StickerCube) -> Vec<Move> {
     let n = cube.size().get();
     let mut moves = Vec::new();
@@ -176,62 +278,156 @@ pub fn solve_centers(cube: &mut StickerCube) -> Vec<Move> {
         return moves; // no center cells
     }
 
-    // Odd cubes: bring the rigid fixed centers to their nominal faces first, so
-    // every face's target color is well-defined.
+    // Odd cubes: bring the rigid fixed centers to their nominal faces first.
     moves.extend(orient_fixed_centers(cube));
 
-    let mut finalized: Vec<Face> = Vec::new();
+    let library = center_cycle_library(n);
+    let order = [
+        Face::Up,
+        Face::Down,
+        Face::Front,
+        Face::Back,
+        Face::Left,
+        Face::Right,
+    ];
 
-    for &w in &SOLVE_ORDER {
-        let cands = candidates(w, n, &finalized);
-        // Greedily make progress until this face is solid.
-        let mut guard = 0usize;
-        let safety_cap = (n * n * n) + 1000; // generous loop bound
-        while !face_center_solved(cube, w) {
-            guard += 1;
-            if guard >= safety_cap {
-                // Greedy repertoire exhausted without finishing this face. Return
-                // the progress made rather than panicking — callers check
-                // `centers_solved`. (Tracked in the module STATUS note.)
-                return moves;
-            }
+    // The six rigid fixed centers are always frozen on odd cubes (already oriented).
+    let fixed: Vec<Cell> = if is_odd(n) {
+        let mid = n / 2;
+        Face::ALL.iter().map(|&f| (f, mid, mid)).collect()
+    } else {
+        Vec::new()
+    };
 
-            let baseline = face_center_correct(cube, w);
-            // A finalized face is "safe" as long as it stays SOLID — any rotation
-            // of an already-solid face just permutes same-colored pieces, so
-            // turns of solved faces are usable as setup moves.
-            let safe = |trial: &StickerCube| -> bool {
-                finalized.iter().all(|&f| face_center_solved(trial, f))
-            };
+    for fi in 0..order.len() {
+        let w = order[fi];
+        let want = w.color();
 
-            // Prefer the candidate that yields the largest progress.
-            let mut best: Option<(usize, &Vec<Move>)> = None;
-            for cand in &cands {
-                let mut trial = cube.clone();
-                apply_all(&mut trial, cand);
-                if !safe(&trial) {
-                    continue;
-                }
-                let gain = face_center_correct(&trial, w);
-                if gain > baseline && best.map(|(g, _)| gain > g).unwrap_or(true) {
-                    best = Some((gain, cand));
-                }
-            }
-            if let Some((_, cand)) = best {
-                apply_all(cube, cand);
-                moves.extend_from_slice(cand);
-            } else {
-                // No commutator helped: rotate the working face (always safe — it
-                // only permutes W's own cells) to expose a new configuration.
-                let nudge = turn(w, n, 1);
-                cube.apply_move(nudge).unwrap();
-                moves.push(nudge);
+        // Frozen = every finalized face's center cells + the fixed centers. A cycle
+        // whose support avoids all frozen cells provably preserves them, so we can
+        // filter by cheap set-membership instead of re-checking the whole cube.
+        let mut frozen: HashSet<Cell> = HashSet::new();
+        for &ff in &order[..fi] {
+            for cell in face_center_cells(ff, n) {
+                frozen.insert(cell);
             }
         }
-        finalized.push(w);
+        for &c in &fixed {
+            frozen.insert(c);
+        }
+        // Only cycles that never disturb a frozen cell may be applied. Wide-move
+        // cycles are unlocked only for the last two faces (fi >= 4), where the
+        // opposite-face-confined last-two-centers 3-cycles they provide are needed;
+        // on the easy early faces they only make the greedy wander.
+        let allow_wide = fi >= 4;
+        let safe: Vec<&CenterCycle> = library
+            .iter()
+            .filter(|cy| (allow_wide || !cy.wide) && cy.support.iter().all(|c| !frozen.contains(c)))
+            .collect();
+
+        let w_set: HashSet<Cell> = face_center_cells(w, n).into_iter().collect();
+        let mut rng = 0x9E3779B97F4A7C15u64 ^ ((fi as u64) << 32) ^ (n as u64);
+        let escape_limit = n * n * 8 + 200;
+        let mut escapes = 0usize;
+
+        while !face_center_solved(cube, w) {
+            let baseline = correct_count(cube, w, want, n) as i32;
+            let wrong: HashSet<Cell> = w_set
+                .iter()
+                .copied()
+                .filter(|&(f, r, c)| cube.color_at(f, r, c) != Some(want))
+                .collect();
+
+            // Candidate cycles: safe ones whose support touches a still-wrong W cell.
+            // 1-ply keeps the biggest correct-count gain; we also remember the
+            // progress-preserving (gain==0) cycles for the escape pool.
+            let mut best: Option<&CenterCycle> = None;
+            let mut best_gain = 0i32;
+            let mut neutral: Vec<&CenterCycle> = Vec::new();
+            let touch: Vec<&&CenterCycle> = safe
+                .iter()
+                .filter(|cy| cy.support.iter().any(|c| wrong.contains(c)))
+                .collect();
+            for &cy in &touch {
+                let mut trial = cube.clone();
+                apply_all(&mut trial, &cy.moves);
+                let gain = correct_count(&trial, w, want, n) as i32 - baseline;
+                if gain > best_gain {
+                    best_gain = gain;
+                    best = Some(cy);
+                } else if gain == 0 {
+                    neutral.push(cy);
+                }
+            }
+            if let Some(cy) = best {
+                apply_all(cube, &cy.moves);
+                moves.extend_from_slice(&cy.moves);
+                escapes = 0;
+                continue;
+            }
+
+            // 2-ply bridge: any safe cycle stages (c1), a W-touching cycle fills
+            // (c2). c1 ranges over all safe cycles so it can shuttle the needed
+            // colour into reach; c2 over the (small) W-touching set. This reliably
+            // resolves the last-cell case a single 3-cycle can't reach. Cost is
+            // |safe|·|touch|, far below the old |repertoire|².
+            let mut bridged = false;
+            'bridge: for cy1 in &safe {
+                let mut t1 = cube.clone();
+                apply_all(&mut t1, &cy1.moves);
+                // c1 must not already lose ground we can't recover; allow neutral
+                // or worse only if some c2 then beats the baseline.
+                for &c2 in &touch {
+                    let mut t2 = t1.clone();
+                    apply_all(&mut t2, &c2.moves);
+                    if correct_count(&t2, w, want, n) as i32 > baseline {
+                        apply_all(cube, &cy1.moves);
+                        moves.extend_from_slice(&cy1.moves);
+                        apply_all(cube, &c2.moves);
+                        moves.extend_from_slice(&c2.moves);
+                        bridged = true;
+                        escapes = 0;
+                        break 'bridge;
+                    }
+                }
+            }
+            if bridged {
+                continue;
+            }
+
+            // Escape: apply a random progress-preserving cycle to reshuffle the free
+            // region, then retry. Bounded so a hopeless state fails fast.
+            escapes += 1;
+            if escapes > escape_limit || neutral.is_empty() {
+                return moves; // give up (callers check centers_solved)
+            }
+            let pick = neutral[(lcg(&mut rng) as usize) % neutral.len()];
+            apply_all(cube, &pick.moves);
+            moves.extend_from_slice(&pick.moves);
+        }
     }
 
     moves
+}
+
+/// Small LCG for deterministic random-restart escapes (no external crates).
+fn lcg(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    *state >> 33
+}
+
+fn correct_count(cube: &StickerCube, w: Face, want: Color, n: usize) -> usize {
+    let mut k = 0;
+    for r in 0..n {
+        for c in 0..n {
+            if is_center_cell(r, c, n) && cube.color_at(w, r, c) == Some(want) {
+                k += 1;
+            }
+        }
+    }
+    k
 }
 
 #[cfg(test)]
@@ -248,6 +444,55 @@ mod tests {
         };
         Challenge::generate(size, spec).unwrap().into_cube()
     }
+
+    fn lcg(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *state >> 33
+    }
+
+    fn wide_scramble(n: usize, seed: u64, depth: usize) -> StickerCube {
+        let size = CubeSize::new(n).unwrap();
+        let mut cube = StickerCube::solved(size);
+        let mut rng = seed;
+        for _ in 0..depth {
+            let f = Face::ALL[(lcg(&mut rng) % 6) as usize];
+            let width = 1 + (lcg(&mut rng) % (n as u64 - 1)) as usize;
+            let turns = [1i8, -1, 2][(lcg(&mut rng) % 3) as usize];
+            cube.apply_move(Move::wide(f, size, width, turns)).unwrap();
+        }
+        cube
+    }
+
+
+    #[test]
+    #[ignore = "debug"]
+    fn centers_failure_probe() {
+        for n in [5usize] {
+            let trials = 3u64;
+            let mut ok = 0;
+            for seed in 0..trials {
+                let mut cube = wide_scramble(n, 0xABCD + seed, 40);
+                let _ = solve_centers(&mut cube);
+                if centers_solved(&cube) {
+                    ok += 1;
+                } else {
+                    let mut counts = String::new();
+                    for f in Face::ALL {
+                        counts += &format!(
+                            "{:?}={} ",
+                            f,
+                            correct_count(&cube, f, f.color(), n)
+                        );
+                    }
+                    println!("n={n} seed={seed} FAIL: {counts}");
+                }
+            }
+            println!("n={n}: {ok}/{trials}");
+        }
+    }
+
 
     // WIP: passes for outer-only scrambles but not yet for general scrambles that
     // rotate odd-cube fixed centers or hit even-cube last-center parity. Tracked

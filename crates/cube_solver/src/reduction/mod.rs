@@ -11,25 +11,31 @@
 //! disturbing already-finalized work. The full solve is checked by replay
 //! (`StickerCube::is_solved`).
 //!
-//! STATUS: work in progress.
+//! STATUS: work in progress — feature-gated (`--features reduction`) and
+//! deliberately **not** wired into `cube_wasm` or the app, so the shipped solver is
+//! never flaky. The 3×3 two-phase (Kociemba) solver is the lab's real engine.
 //!
-//! DONE & verified: odd-cube fixed-center orientation (`orient_fixed_centers`) —
-//! wide scrambles crossing the middle slice rotate the frame; this restores it,
-//! and the centers commutators exclude the middle slice to preserve it.
+//! DONE & verified: odd-cube fixed-center orientation (`orient_fixed_centers`).
 //!
-//! WIP: the greedy propose-and-verify centers repertoire does not always finish a
-//! face (it returns partial progress rather than panicking). The next step is
-//! deterministic commutator targeting instead of a greedy search.
+//! WIP — centers (`centers::solve_centers`): a fast support-filtered greedy over a
+//! commutator library (`[slice,face]`, `[slice,slice]`, and wide-move commutators
+//! for the last two centers), with a `|safe|·|touch|` 2-ply bridge. It solves the
+//! easy faces quickly but is **not yet reliable**: it stalls on last-cell reach
+//! gaps and the last-two-centers trapped-piece case. A correct solver needs
+//! deterministic per-cell commutator construction, not greedy search.
 //!
-//! NOT STARTED: even-cube last-center parity, edge-wing pairing, the reduced-3x3
-//! finish, and 3x3 OLL/PLL parity for even N. See the project plan for the staged
-//! design. Intentionally **not** wired into `run_solver_lab_observed` yet.
+//! NOT RELIABLE / NOT STARTED: even-cube last-center parity, edge-wing pairing
+//! (`edges::solve_edges` is scaffolding), the reduced-3×3 finish via Kociemba, and
+//! 3×3 OLL/PLL parity for even N. Do not ship until replay-to-solved tests pass for
+//! N ∈ {4,5,6,7}.
 
 mod centers;
+mod edges;
 
 use cube_core::{Axis, CubeState, Face, Move, StickerCube};
 
 pub use centers::solve_centers;
+pub use edges::{edges_paired, solve_edges};
 
 /// The single inner layer `depth` layers in from `face` (depth 0 = the outer
 /// face layer). Sign matches `Move::wide`, so `slice_from(f, n, 0, t) ==
@@ -45,7 +51,9 @@ pub(crate) fn slice_from(face: Face, n: usize, depth: usize, turns: i8) -> Move 
     }
 }
 
-/// Outer face quarter/half turn.
+/// Outer face quarter/half turn. Part of the reduction move toolkit; kept for the
+/// edge-pairing/parity stages still under construction.
+#[allow(dead_code)]
 pub(crate) fn turn(face: Face, n: usize, turns: i8) -> Move {
     let size = cube_core::CubeSize::new(n).expect("size >= 2");
     Move::face(face, size, turns)
