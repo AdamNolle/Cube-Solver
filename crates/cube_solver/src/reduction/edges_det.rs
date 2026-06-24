@@ -172,42 +172,130 @@ fn slot_map(sticker_perm: &[usize], slots: usize) -> Vec<(usize, usize, bool)> {
 }
 
 /// Build the wing-cycle library for size `n`: center-safe sequences (preserve solved
-/// centres) reduced to their slot action.
+/// centres) reduced to their slot action, deduped by exact effect, and *enriched with
+/// meta-commutators*. Commutators `[P,Q]` of two short center-safe wing cycles are
+/// themselves center-safe and — when `P,Q` overlap — confine their net effect to a few
+/// slots (often a fresh pure 3-cycle at a slot-triple the raw repertoire misses). This is
+/// the same trick that cracked the last two centres, and it gives the last-edges coverage
+/// the raw conjugated 3-cycles lack.
 fn build_library(n: usize) -> Vec<WingCyc> {
+    use super::{commutator, conjugate};
     let cells = wing_sticker_cells(n);
     let probes = build_probes(n, &cells);
-    let solved = StickerCube::solved(CubeSize::new(n).unwrap());
-    let mut move_perms: std::collections::HashMap<MoveKey, Vec<usize>> = Default::default();
+    let size = CubeSize::new(n).unwrap();
+    let solved = StickerCube::solved(size);
+    let slots = n_slots(n);
+    let nstick = cells.len();
     let rep = wing_repertoire(n);
+
+    // Decode each elementary move's wing-sticker permutation once (with inverses); all
+    // sequences (incl. commutators/conjugates) are composed from these — no cube clones.
+    let mut move_perms: std::collections::HashMap<MoveKey, Vec<usize>> = Default::default();
+    let decode = |m: Move, mp: &mut std::collections::HashMap<MoveKey, Vec<usize>>| {
+        mp.entry(move_key(&m))
+            .or_insert_with(|| single_move_perm(&cells, &probes, m));
+    };
     for seq in &rep {
         for &m in seq {
-            move_perms
-                .entry(move_key(&m))
-                .or_insert_with(|| single_move_perm(&cells, &probes, m));
-            let inv = m.inverse();
-            move_perms
-                .entry(move_key(&inv))
-                .or_insert_with(|| single_move_perm(&cells, &probes, inv));
+            decode(m, &mut move_perms);
+            decode(m.inverse(), &mut move_perms);
         }
     }
-    let slots = n_slots(n);
-    let mut out = Vec::new();
-    for seq in rep {
-        // center-safe?
+    // Face turns re-aim the metas for full coverage (they keep centres solid).
+    let face_turns: Vec<Move> = Face::ALL
+        .iter()
+        .flat_map(|&f| {
+            [1i8, -1, 2]
+                .into_iter()
+                .map(move |t| Move::face(f, size, t))
+        })
+        .collect();
+    for &m in &face_turns {
+        decode(m, &mut move_perms);
+        decode(m.inverse(), &mut move_perms);
+    }
+
+    let ident: Vec<usize> = (0..nstick).collect();
+    let mv_key = |mv: &[Move]| -> Vec<String> { mv.iter().map(|x| x.notation(size)).collect() };
+
+    // Dedup by exact wing-sticker permutation, keeping the shortest move sequence.
+    let mut by_perm: std::collections::HashMap<Vec<usize>, Vec<Move>> = Default::default();
+    let consider =
+        |seq: &[Move], by_perm: &mut std::collections::HashMap<Vec<usize>, Vec<Move>>| {
+            let p = seq_perm(&move_perms, nstick, seq);
+            if p == ident {
+                return;
+            }
+            let better = match by_perm.get(&p) {
+                Some(prev) => {
+                    seq.len() < prev.len()
+                        || (seq.len() == prev.len() && mv_key(seq) < mv_key(prev))
+                }
+                None => true,
+            };
+            if better {
+                by_perm.insert(p, seq.to_vec());
+            }
+        };
+
+    // Raw repertoire (center-safe only).
+    for seq in &rep {
         let mut c = solved.clone();
-        apply_all(&mut c, &seq);
-        if !centers_solved(&c) {
-            continue;
+        apply_all(&mut c, seq);
+        if centers_solved(&c) {
+            consider(seq, &mut by_perm);
         }
-        let sp = seq_perm(&move_perms, cells.len(), &seq);
-        let map = slot_map(&sp, slots);
+    }
+
+    // Meta-commutators from the shortest cycles, confined to ≤6 slots, re-aimed by face
+    // turns. (Metas/face-conjugations of center-safe cycles stay center-safe.)
+    let mut short: Vec<Vec<Move>> = by_perm.values().cloned().collect();
+    short.sort_by_key(|s| (s.len(), mv_key(s)));
+    short.truncate(120);
+    for p_seq in &short {
+        for q_seq in &short {
+            let meta = commutator(p_seq, q_seq);
+            let mp = seq_perm(&move_perms, nstick, &meta);
+            let sup = slot_map(&mp, slots).len();
+            if mp == ident || sup == 0 || sup > 6 {
+                continue;
+            }
+            consider(&meta, &mut by_perm);
+            for ft in &face_turns {
+                consider(&conjugate(&[*ft], &meta), &mut by_perm);
+            }
+        }
+    }
+
+    // Smallest-support first; cap the large-support (general) cycles, keep small ones all.
+    let mut raw: Vec<(usize, Vec<usize>, Vec<Move>)> = by_perm
+        .into_iter()
+        .map(|(p, m)| (slot_map(&p, slots).len(), p, m))
+        .collect();
+    raw.sort_by(|(sa, pa, ma), (sb, pb, mb)| {
+        (sa, ma.len())
+            .cmp(&(sb, mb.len()))
+            .then_with(|| pa.cmp(pb))
+            .then_with(|| mv_key(ma).cmp(&mv_key(mb)))
+    });
+    let cap_gen = 9000usize;
+    let mut ngen = 0usize;
+    let mut out = Vec::new();
+    for (sup, p, moves) in raw {
+        let map = slot_map(&p, slots);
         if map.is_empty() {
             continue;
+        }
+        if sup > 4 {
+            if ngen >= cap_gen {
+                continue;
+            }
+            ngen += 1;
         }
         let support: Vec<usize> = map.iter().map(|&(d, _, _)| d).collect();
         let smap = map.iter().map(|&(d, s, f)| (d, (s, f))).collect();
         out.push(WingCyc {
-            moves: seq,
+            moves,
             map,
             support,
             smap,
@@ -686,6 +774,36 @@ mod tests {
             println!(
                 "n={n}: edges paired {paired}/{trials} ({:?}); fails {fails:?}",
                 t0.elapsed()
+            );
+        }
+    }
+
+    /// For odd cubes (no 3×3 parity), how close does a single `solve_edges` pass get to
+    /// all-home? If it reaches all-but-2 (a wing transposition), the stall is parity and
+    /// one slice toggle fixes it; if it stalls far short, it is a coverage gap.
+    #[test]
+    #[ignore = "diagnostic"]
+    fn n5_closeness() {
+        use super::super::{centers_solved, edges_paired, solve_centers};
+        let n = 5usize;
+        let slots = n_slots(n);
+        let cells = wing_sticker_cells(n);
+        let home: Vec<(Color, Color)> = (0..slots).map(|i| home_pair(n, i)).collect();
+        for seed in 0..12u64 {
+            let mut cube = scramble(n, 0x500 + seed, n * 15);
+            solve_centers(&mut cube);
+            if !centers_solved(&cube) {
+                println!("seed {seed}: centres FAILED");
+                continue;
+            }
+            solve_edges(&mut cube);
+            let at_home = (0..slots)
+                .filter(|&i| cur_pair(&cube, &cells, i) == home[i])
+                .count();
+            println!(
+                "seed {seed}: home {at_home}/{slots}, paired={}, centres_ok={}",
+                edges_paired(&cube),
+                centers_solved(&cube),
             );
         }
     }
