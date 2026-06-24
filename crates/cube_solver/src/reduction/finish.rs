@@ -209,16 +209,19 @@ pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Mo
     let n = cube.size().get();
     let mut moves = Vec::new();
     moves.extend(solve_centers(cube));
-    if !centers_solved(cube) {
-        if dbg {
-            eprintln!("[red] centres FAILED");
-        }
-        return None;
-    }
-
     let home = home_targets(n);
     let even = n.is_multiple_of(2);
-    moves.extend(solve_edges(cube));
+    // The centre solver isn't 100% reliable on big cubes (≈n=8 it stalls on some
+    // scrambles). Don't give up if it does: the parity-disturbance loop below re-reduces
+    // centres *and* edges after each disturbance, and a disturbed centre configuration
+    // very often solves where the original stalled. So only solve edges (and try an
+    // immediate finish) when the centres are already solid; otherwise fall straight into
+    // the disturbance search.
+    if centers_solved(cube) {
+        moves.extend(solve_edges(cube));
+    } else if dbg {
+        eprintln!("[red] centres stalled on first pass; relying on disturbance recovery");
+    }
 
     // Finish from the current state if edges are all-home: solve the reduced 3×3, and on an
     // even cube clear an odd-corner PLL by re-driving edges to a two-dedges-swapped target
@@ -245,14 +248,20 @@ pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Mo
         false
     };
 
-    if try_finish(cube, &mut moves) {
+    // Snapshot the clean stalled state BEFORE attempting a finish: `try_finish` runs the
+    // dedge swap, which mutates `cube` even when it ultimately fails (e.g. the swap target
+    // is itself unreachable at this parity) — the parity search must start from the clean
+    // stall, not that half-swapped state. (This was the 8×8 bug: a disturbance that solves
+    // exists, but Phase 2 was applying it to the corrupted post-swap cube.)
+    let base = cube.clone();
+    let base_moves = moves.clone();
+
+    if centers_solved(cube) && try_finish(cube, &mut moves) {
         return Some(moves);
     }
 
     // Parity search. The edges stalled — an odd wing permutation in one or more wing orbits
     // (n-2 wings/edge split into orbits with independent parities; larger cubes have more).
-    let base = cube.clone();
-    let base_moves = moves;
     let rep = parity_repertoire(n);
 
     // Phase 1 — cumulative walk (fast, resolves n≤6 and easy n≥7): accumulate disturbances
@@ -566,18 +575,19 @@ mod tests {
         assert_eq!(solved, trials, "n=4 not fully reliable: fails {fails:?}");
     }
 
-    /// End-to-end across sizes: even cubes exercise the deterministic parity path, odd
-    /// cubes the parity-free path. Verified fully solved by replay. 4×4, 5×5 and 6×6 are
-    /// fully reliable; n≥7 not yet covered.
+    /// End-to-end across sizes 4–8: even cubes exercise the deterministic parity path, odd
+    /// cubes the parity-free path; both rely on disturbance recovery when the centre solver
+    /// stalls on a big cube. Verified fully solved by replay; all of 4×4–8×8 are reliable.
     #[test]
     #[ignore = "slow; run explicitly"]
     fn full_solve_sizes() {
         let solver = Solver::new();
-        for n in [4usize, 5, 6] {
+        for n in [4usize, 5, 6, 7, 8] {
             let mut solved = 0;
             let mut fails = Vec::new();
             let t0 = std::time::Instant::now();
-            let trials = 20u64;
+            // Fewer trials for the slower big cubes.
+            let trials: u64 = if n <= 6 { 20 } else { 10 };
             for seed in 0..trials {
                 let mut cube = scramble(n, 0x500 + seed, n * 15);
                 match solve_reduction(&mut cube, &solver) {
