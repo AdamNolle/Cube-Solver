@@ -388,6 +388,82 @@ fn build_library(n: usize) -> Vec<Cyc> {
                 }
             }
         }
+
+        // Single-orbit pure 3-cycles: a short base cycle commutated with a single face turn
+        // or inner slice. Unlike the [slice,face] candidates (which mix orbits) and the
+        // [short,short] metas above (kept only when ≤2-face colour-confined), these isolate
+        // ONE centre orbit — inner-X and obliques, first needed at n≥6 to place a face's
+        // last piece. Keep the pure (≤3-cell) ones regardless of how many faces they span;
+        // re-aim each with a face turn for full coverage. All elementary moves here are
+        // already decoded (face turns, and every slice appears as a base mover).
+        let mut singles: Vec<Move> = face_turns.clone();
+        for f in Face::ALL {
+            for d in 1..=n - 2 {
+                for s in [1i8, -1] {
+                    singles.push(slice_from(f, n, d, s));
+                }
+            }
+        }
+        for p_seq in &short {
+            for b in &singles {
+                let meta = commutator(p_seq, &[*b]);
+                let mp = seq_perm(&move_perms, ncenters, &meta);
+                // Keep the orbit-isolated pure 3-cycles (any faces) AND the ≤2-face
+                // colour-confined cycles (the last-two-centres churns, incl. inner-X).
+                let sup = (0..ncenters).filter(|&i| mp[i] != i).count();
+                if mp == ident || (sup > 3 && color_faces(&mp) > 2) {
+                    continue;
+                }
+                consider(&meta, &mut by_perm);
+                for ft in &face_turns {
+                    consider(&conjugate(&[*ft], &meta), &mut by_perm);
+                }
+            }
+        }
+
+        // Last-two-centres algs: a commutator of two orbit-isolated 3-cycles that share a
+        // buffer nets out to a single orbit's churn-restore confined to 2 faces — exactly
+        // what the final two (opposite) centres need (no reservoir is left, so a 3-face
+        // 3-cycle is unsafe there). Pair the shortest pure 3-cycles just generated and keep
+        // the ≤2-face results; re-aim each by a face turn.
+        // Group pure 3-cycles by the cell-orbit they move (by the block coords of one
+        // moved cell), and keep the shortest few PER orbit, so every orbit — including
+        // inner-X, whose 3-cycles are longer and would be truncated out of a global
+        // shortest-N list — gets paired into last-two algs.
+        let orbit_key = |p: &[usize]| -> (usize, usize) {
+            let i = (0..p.len()).find(|&i| p[i] != i).unwrap_or(0);
+            let (_, r, c) = centers[i];
+            let rr = r.min(n - 1 - r);
+            let cc = c.min(n - 1 - c);
+            (rr.min(cc), rr.max(cc)) // orbit signature, mirror-invariant
+        };
+        let mut by_orbit: HashMap<(usize, usize), Vec<Vec<Move>>> = HashMap::new();
+        for (p, m) in by_perm.iter() {
+            if p.iter().enumerate().filter(|(i, &s)| *i != s).count() == 3 {
+                by_orbit.entry(orbit_key(p)).or_default().push(m.clone());
+            }
+        }
+        let mut pure3: Vec<Vec<Move>> = Vec::new();
+        for cycles in by_orbit.values_mut() {
+            cycles.sort_by_key(|s| (s.len(), mv_key(s)));
+            cycles.truncate(60);
+            pure3.extend(cycles.iter().cloned());
+        }
+        pure3.sort_by_key(|s| (s.len(), mv_key(s)));
+        pure3.truncate(260);
+        for p in &pure3 {
+            for q in &pure3 {
+                let meta = commutator(p, q);
+                let mp = seq_perm(&move_perms, ncenters, &meta);
+                if mp == ident || color_faces(&mp) > 2 {
+                    continue;
+                }
+                consider(&meta, &mut by_perm);
+                for ft in &face_turns {
+                    consider(&conjugate(&[*ft], &meta), &mut by_perm);
+                }
+            }
+        }
     }
 
     // Keep every colour-confined (<=2-face) cycle plus a generous cap of general
@@ -404,7 +480,10 @@ fn build_library(n: usize) -> Vec<Cyc> {
     let mut ngen = 0;
     let mut out: Vec<Cyc> = Vec::new();
     for (p, moves) in raw {
-        if color_faces(&p) > 2 {
+        // Pure ≤3-cell 3-cycles are the orbit-isolated movers (inner-X, obliques — needed
+        // to place a face's last piece at n≥6); keep them all. Only larger many-face
+        // "general" cycles are capped.
+        if color_faces(&p) > 2 && support_len(&p) > 3 {
             if ngen >= cap_gen {
                 continue;
             }
@@ -951,6 +1030,108 @@ mod tests {
             let mv = solve_centers(&mut cube);
             assert!(centers_solved(&cube));
             assert!(mv.is_empty(), "no moves for solved n={n}");
+        }
+    }
+
+    /// Search for a clean orbit-isolated inner-X 3-cycle on 6×6 — the n=6 centre blocker.
+    /// If found, its construction can be added to the library to place the last inner-X.
+    #[test]
+    #[ignore = "diagnostic search"]
+    fn find_innerx_3cycle() {
+        let n = 6usize;
+        let size = CubeSize::new(n).unwrap();
+        let centers = all_center_cells(n);
+        let probes = build_probes(n, &centers);
+        let nc = centers.len();
+        let is_innerx = |i: usize| {
+            let (_, r, c) = centers[i];
+            (r == 2 || r == 3) && (c == 2 || c == 3)
+        };
+        let base = base_candidates(n);
+        let mut bcands: Vec<Vec<Move>> = Vec::new();
+        for f in Face::ALL {
+            for t in [1i8, -1, 2] {
+                bcands.push(vec![Move::face(f, size, t)]);
+            }
+            for d in 1..=n - 2 {
+                for t in [1i8, -1] {
+                    bcands.push(vec![slice_from(f, n, d, t)]);
+                }
+            }
+        }
+        let mut mp: HashMap<MoveKey, Vec<usize>> = HashMap::new();
+        for seq in base.iter().chain(bcands.iter()) {
+            for &m in seq {
+                mp.entry(move_key(&m))
+                    .or_insert_with(|| single_move_perm(&centers, &probes, m));
+                let inv = m.inverse();
+                mp.entry(move_key(&inv))
+                    .or_insert_with(|| single_move_perm(&centers, &probes, inv));
+            }
+        }
+        // 2-face-confined cycles touching inner-X (the last-two-centres churn-restore algs).
+        let faces_of = |support: &[usize]| -> std::collections::BTreeSet<usize> {
+            support
+                .iter()
+                .map(|&i| Face::ALL.iter().position(|&x| x == centers[i].0).unwrap())
+                .collect()
+        };
+        let opposite = |fa: usize, fb: usize| -> bool {
+            // Face::ALL order: Up,Down,Front,Back,Left,Right → opposite pairs (0,1)(2,3)(4,5)
+            fa / 2 == fb / 2
+        };
+        let mut found3 = 0usize;
+        let mut found2 = 0usize;
+        let mut samp3: Vec<String> = Vec::new();
+        let mut samp2: Vec<String> = Vec::new();
+        let mut min2_a = usize::MAX;
+        for a in &base {
+            for b in &bcands {
+                let meta = commutator(a, b);
+                let perm = seq_perm(&mp, nc, &meta);
+                let support: Vec<usize> = (0..nc).filter(|&i| perm[i] != i).collect();
+                if support.is_empty() {
+                    continue;
+                }
+                let has_innerx = support.iter().any(|&i| is_innerx(i));
+                if support.len() == 3 && support.iter().all(|&i| is_innerx(i)) {
+                    found3 += 1;
+                    if samp3.len() < 2 {
+                        samp3.push(
+                            meta.iter()
+                                .map(|m| m.notation(size))
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        );
+                    }
+                }
+                let fs = faces_of(&support);
+                if has_innerx && support.len() <= 8 && fs.len() == 2 {
+                    let v: Vec<usize> = fs.iter().copied().collect();
+                    if opposite(v[0], v[1]) {
+                        found2 += 1;
+                        min2_a = min2_a.min(a.len());
+                        if samp2.len() < 3 {
+                            samp2.push(format!(
+                                "sup={} a.len={}: {}",
+                                support.len(),
+                                a.len(),
+                                meta.iter()
+                                    .map(|m| m.notation(size))
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        println!("n=6 pure inner-X 3-cycles: {found3}; 2-opposite-face inner-X cycles: {found2} (min a.len={min2_a})");
+        for s in &samp3 {
+            println!("  3cyc: {s}");
+        }
+        for s in &samp2 {
+            println!("  2face: {s}");
         }
     }
 }
