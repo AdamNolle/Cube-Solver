@@ -22,10 +22,12 @@
 //! once and cycles are composed from them.
 //!
 //! STATUS: **the 4×4 is solved and verified** (30 random wide scrambles →
-//! centres-solved, ~5 s one-time library build, ~30 ms/solve). N ≥ 5 build fast but
-//! the solve is not yet reliable/quick — the bigger last-two-centres and odd-cube
-//! fixed/T/X-centre structure need more coverage and a cheaper bridge. Work in
-//! progress; not yet wired into the app.
+//! centres-solved, ~5 s one-time library build, ~30 ms/solve). N ≥ 5 now completes
+//! (the bridge predicts results by composing permutations instead of cloning the
+//! cube, so it no longer grinds) but coverage is still partial — n=5 solves ~2/6
+//! random scrambles; the bigger, multi-orbit last-two-centres band (X- and
+//! +-centres on odd cubes) needs more confined-cycle coverage, and n≥6 still needs
+//! a faster library build. Work in progress; not yet wired into the app.
 
 use super::centers::{cube_rotations, orient_fixed_centers};
 use super::{apply_all, commutator, conjugate, is_center_cell, slice_from};
@@ -600,23 +602,28 @@ pub fn solve_centers(cube: &mut StickerCube) -> Vec<Move> {
                 continue;
             }
 
-            // Bridge fallback for the last-cell case: a safe cycle `c1` (which may
-            // temporarily disturb the working face — both legs keep every finalised
-            // face intact) followed by a safe cycle `c2`, netting `t` correct without
-            // losing ground. This realises the "break and restore" the deterministic
-            // steps can't. Only reached at a genuine stall (small `safe`), so the
-            // |safe|·|touch_t| cost is bounded.
+            // Bridge for the last-cell case: a safe cycle `c1` (which may temporarily
+            // disturb the working face — both legs keep every finalised face intact)
+            // then a safe cycle `c2` touching `t`, netting `t` correct without losing
+            // ground. This is the "break and restore" the single steps can't do. The
+            // result is PREDICTED by composing the cycles' permutations (no cube
+            // clone), so it stays fast even over the whole safe set.
             let base = correct_count(cube, &w_cells, want);
+            let src_through = |cy: &Cyc, x: Cell| cy.perm.get(&x).copied().unwrap_or(x);
+            let empty: Vec<&Cyc> = Vec::new();
             let mut bridged = false;
-            // Only confined (≤2-face) cycles can both disturb and restore the band;
-            // restricting c1 to small-support cycles keeps the bridge bounded.
-            'bridge: for c1 in safe.iter().filter(|c| c.support.len() <= 12).take(1500) {
-                let mut t1 = cube.clone();
-                apply_all(&mut t1, &c1.moves);
-                for c2 in touch.get(&t).unwrap_or(&Vec::new()) {
-                    let mut t2 = t1.clone();
-                    apply_all(&mut t2, &c2.moves);
-                    if color_at(&t2, t) == want && correct_count(&t2, &w_cells, want) > base {
+            'bridge: for c1 in &safe {
+                for c2 in touch.get(&t).unwrap_or(&empty) {
+                    // colour a cell shows after c1∘c2: source is c1_src(c2_src(cell)).
+                    let comb = |w: Cell| src_through(c1, src_through(c2, w));
+                    if color_at(cube, comb(t)) != want {
+                        continue;
+                    }
+                    let after = w_cells
+                        .iter()
+                        .filter(|&&w| color_at(cube, comb(w)) == want)
+                        .count();
+                    if after > base {
                         apply_all(cube, &c1.moves);
                         moves.extend_from_slice(&c1.moves);
                         apply_all(cube, &c2.moves);
