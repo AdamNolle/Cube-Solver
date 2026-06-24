@@ -161,7 +161,7 @@ fn edge_setups(n: usize) -> Vec<Vec<Move>> {
     setups
 }
 
-fn wing_repertoire(n: usize) -> Vec<Vec<Move>> {
+pub(crate) fn wing_repertoire(n: usize) -> Vec<Vec<Move>> {
     let setups = edge_setups(n);
     let bases = wing_base_cycles(n);
     let mut out = Vec::with_capacity(setups.len() * bases.len());
@@ -201,6 +201,9 @@ fn wing_idx_correct(cube: &StickerCube, n: usize, i: usize) -> bool {
 /// only tries cycles touching a still-wrong wing instead of scanning the whole
 /// repertoire — the same support-filter that made the centre solver fast. Even cubes
 /// can leave an OLL/PLL parity for the 3×3-finish stage to fix.
+///
+/// Superseded by the deterministic `edges_det::solve_edges`; kept as a fallback.
+#[allow(dead_code)]
 pub fn solve_edges(cube: &mut StickerCube) -> Vec<Move> {
     let n = cube.size().get();
     let mut moves = Vec::new();

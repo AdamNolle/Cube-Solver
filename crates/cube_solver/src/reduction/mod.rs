@@ -43,6 +43,10 @@ mod centers;
 #[allow(dead_code)]
 mod centers_det;
 mod edges;
+// Deterministic edge-pairing (WIP), reusing the centre solver's permutation
+// framework over wing stickers.
+#[allow(dead_code)]
+mod edges_det;
 #[allow(dead_code)]
 mod finish;
 
@@ -51,7 +55,10 @@ use cube_core::{Axis, CubeState, Face, Move, StickerCube};
 // The deterministic centre solver is the real one; the old greedy `centers` module
 // is kept only for `orient_fixed_centers`/`cube_rotations` that `centers_det` reuses.
 pub use centers_det::solve_centers;
-pub use edges::{edges_paired, solve_edges};
+pub use edges::edges_paired;
+// The deterministic edge solver (perm-tracking, like `centers_det`) is the real one;
+// the greedy `edges::solve_edges` is kept behind `--features reduction` as a fallback.
+pub use edges_det::solve_edges;
 pub use finish::{finish_3x3, solve_reduction};
 
 /// The single inner layer `depth` layers in from `face` (depth 0 = the outer

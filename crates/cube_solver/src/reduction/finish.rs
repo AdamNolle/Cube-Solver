@@ -123,12 +123,50 @@ pub fn finish_3x3(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Move>> 
     Some(out)
 }
 
+/// Varied parity-disturbance sequences for the toggle loop: single inner slices across
+/// every face and depth, plus a few two-axis combinations. Cycling these (each followed
+/// by a deterministic re-reduction) explores all four OLL×PLL parity classes, where a
+/// single fixed slice would only oscillate between two.
+fn parity_repertoire(n: usize) -> Vec<Vec<Move>> {
+    use super::slice_from;
+    let mut out: Vec<Vec<Move>> = Vec::new();
+    for f in [
+        Face::Right,
+        Face::Up,
+        Face::Front,
+        Face::Left,
+        Face::Down,
+        Face::Back,
+    ] {
+        for d in 1..=n - 2 {
+            out.push(vec![slice_from(f, n, d, 1)]);
+        }
+    }
+    // Two-axis combos flip the *other* combined parity bit, reaching classes a single
+    // slice cannot from some starts.
+    out.push(vec![
+        slice_from(Face::Right, n, 1, 1),
+        slice_from(Face::Up, n, 1, 1),
+    ]);
+    out.push(vec![
+        slice_from(Face::Right, n, 1, 1),
+        slice_from(Face::Front, n, 1, 1),
+    ]);
+    out.push(vec![
+        slice_from(Face::Up, n, 1, 1),
+        slice_from(Face::Front, n, 1, 1),
+    ]);
+    out
+}
+
 /// Full NxN reduction solve: centres → edges → 3×3 finish. On even cubes the reduced
-/// 3×3 can carry OLL/PLL parity (an impossible 3×3 state); we toggle the wing-
-/// permutation parity with one inner slice and re-reduce, which makes it solvable.
-/// Returns the complete move list (applied to `cube`), or `None` if a stage fails.
+/// 3×3 can carry OLL/PLL parity (an impossible 3×3 state); we disturb the wing
+/// permutation with a varied repertoire of inner slices and re-reduce, which makes it
+/// solvable. Returns the complete move list (applied to `cube`), or `None` if a stage
+/// fails.
 pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Move>> {
-    use super::{centers_solved, edges_paired, slice_from, solve_centers, solve_edges};
+    use super::edges_det::{at_target, home_swapped_target, home_targets, solve_to_target};
+    use super::{centers_solved, solve_centers, solve_edges};
     let dbg = std::env::var("RDBG").is_ok();
     let n = cube.size().get();
     let mut moves = Vec::new();
@@ -139,41 +177,63 @@ pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Mo
         }
         return None;
     }
-    moves.extend(solve_edges(cube));
-    if !edges_paired(cube) {
-        if dbg {
-            eprintln!("[red] edges FAILED (first)");
+
+    // One unified loop. Each pass drives edges toward *all-home*; if reached, the 3×3 is
+    // finished — and if that all-home 3×3 is unsolvable (only possible cause: odd corners,
+    // since all-home means no dedge flips and an even dedge permutation) we re-drive edges
+    // to a target with two edges *swapped*, flipping the dedge-permutation parity to match
+    // the corners (an even wing permutation for even n, hence reachable). When a pass
+    // can't reach all-home (an odd wing permutation, or a rare coverage stall), we disturb
+    // the wings with the next entry of a *varied* slice repertoire and re-reduce: varying
+    // the disturbance both flips wing parity and explores re-reductions that sidestep a
+    // coverage stall. Odd cubes have no reduction parity, so they finish on the first pass.
+    let home = home_targets(n);
+    let rep = parity_repertoire(n);
+    let even = n.is_multiple_of(2);
+    for attempt in 0..=rep.len() {
+        if attempt > 0 {
+            for &m in &rep[attempt - 1] {
+                cube.apply_move(m).ok()?;
+                moves.push(m);
+            }
+            moves.extend(solve_centers(cube));
+            if !centers_solved(cube) {
+                if dbg {
+                    eprintln!("[red] centres FAILED after disturbance (attempt {attempt})");
+                }
+                return None;
+            }
         }
-        return None;
-    }
-    for attempt in 0..4 {
+        moves.extend(solve_edges(cube));
+        if !at_target(cube, &home) {
+            if dbg {
+                eprintln!("[red] not all-home at attempt {attempt}; disturbing");
+            }
+            continue;
+        }
         if let Some(fin) = finish_3x3(cube, solver) {
             moves.extend(fin);
             return Some(moves);
         }
+        if !even {
+            continue; // odd cubes never carry parity; a re-reduction will solve
+        }
+        // All-home but unsolvable ⇒ odd corners. Swap two dedges to flip PLL parity.
         if dbg {
-            eprintln!("[red] parity at attempt {attempt}; toggling + re-reducing");
+            eprintln!("[red] all-home odd corners at attempt {attempt}; swapping two dedges");
         }
-        // Parity: an inner slice flips the wing-permutation parity (and scrambles
-        // centres/edges, which we re-solve cheaply), turning the impossible 3×3 into
-        // a solvable one.
-        let slice = slice_from(Face::Right, n, 1, 1);
-        cube.apply_move(slice).ok()?;
-        moves.push(slice);
-        moves.extend(solve_centers(cube));
-        if !centers_solved(cube) {
-            return None;
-        }
-        moves.extend(solve_edges(cube));
-        if !edges_paired(cube) {
-            if dbg {
-                eprintln!("[red] edges FAILED after toggle (attempt {attempt})");
+        let swapped = home_swapped_target(n, 0, 1);
+        moves.extend(solve_to_target(cube, &swapped));
+        if at_target(cube, &swapped) {
+            if let Some(fin) = finish_3x3(cube, solver) {
+                moves.extend(fin);
+                return Some(moves);
             }
-            return None;
         }
+        // Swap didn't resolve it (shouldn't happen); the next disturbance will retry.
     }
     if dbg {
-        eprintln!("[red] parity NOT resolved after 4 attempts");
+        eprintln!("[red] NOT resolved after {} attempts", rep.len() + 1);
     }
     None
 }
@@ -202,25 +262,94 @@ mod tests {
         cube
     }
 
-    /// End-to-end 4×4: full reduction (centres → edges → finish + parity), verified
-    /// fully solved by replay.
+    /// Diagnostic: after pairing edges to home (with a wing-parity toggle to reach a
+    /// paired state), print the reduced 3×3's invariants per seed. If unsolvable cases
+    /// are dominated by `cp_par != ep_par` with `ep_par == even`, the failure is odd
+    /// corners — the home-targeting parity trap.
     #[test]
-    #[ignore = "edge-pairing greedy not yet reliable on all scrambles"]
+    #[ignore = "diagnostic"]
+    fn parity_structure_n4() {
+        use super::super::{centers_solved, edges_paired, slice_from, solve_centers, solve_edges};
+        for seed in 0..16u64 {
+            let mut cube = scramble(4, 0x100 + seed, 40);
+            solve_centers(&mut cube);
+            // reach a paired state, toggling wing parity if the solver stalls
+            for _ in 0..6 {
+                solve_edges(&mut cube);
+                if edges_paired(&cube) {
+                    break;
+                }
+                let _ = cube.apply_move(slice_from(Face::Right, 4, 1, 1));
+                solve_centers(&mut cube);
+            }
+            let paired = edges_paired(&cube) && centers_solved(&cube);
+            if !paired {
+                println!("seed {seed}: NOT paired");
+                continue;
+            }
+            let cc = sticker_to_cubie(&extract_3x3(&cube));
+            let co: u32 = cc.co.iter().map(|&x| x as u32).sum();
+            let eo: u32 = cc.eo.iter().map(|&x| x as u32).sum();
+            println!(
+                "seed {seed}: co%3={} eo%2={} cp_par={} ep_par={} solvable={}",
+                co % 3,
+                eo % 2,
+                perm_parity(&cc.cp) as u8,
+                perm_parity(&cc.ep) as u8,
+                is_solvable(&cc)
+            );
+        }
+    }
+
+    /// End-to-end 4×4: full reduction (centres → edges → finish + parity), verified
+    /// fully solved by replay over many scrambles.
+    #[test]
+    #[ignore = "slow; run explicitly"]
     fn full_solve_n4() {
         let solver = Solver::new();
         let mut solved = 0;
         let mut fails = Vec::new();
         let t0 = std::time::Instant::now();
-        for seed in 0..16u64 {
-            let mut cube = scramble(4, 0x100 + seed, 40);
+        let trials = 50u64;
+        for seed in 0..trials {
+            let mut cube = scramble(4, 0x100 + seed, 60);
             match solve_reduction(&mut cube, &solver) {
                 Some(_) if cube.is_solved() => solved += 1,
                 _ => fails.push(seed),
             }
         }
         println!(
-            "n=4 full solve: {solved}/16 ({:?}); fails {fails:?}",
+            "n=4 full solve: {solved}/{trials} ({:?}); fails {fails:?}",
             t0.elapsed()
         );
+        assert_eq!(solved, trials, "n=4 not fully reliable: fails {fails:?}");
+    }
+
+    /// End-to-end across sizes: even cubes exercise the deterministic parity path, odd
+    /// cubes the parity-free path. Verified fully solved by replay.
+    #[test]
+    #[ignore = "slow; run explicitly"]
+    fn full_solve_sizes() {
+        // n=4 is fully reliable; n=5 (odd off-middle wing parity) is WIP; n=6 centres
+        // (even obliques) and n≥7 are not yet covered.
+        let solver = Solver::new();
+        for n in [4usize, 5] {
+            let mut solved = 0;
+            let mut fails = Vec::new();
+            let t0 = std::time::Instant::now();
+            let trials = 12u64;
+            for seed in 0..trials {
+                let mut cube = scramble(n, 0x500 + seed, n * 15);
+                match solve_reduction(&mut cube, &solver) {
+                    Some(_) if cube.is_solved() => solved += 1,
+                    _ => fails.push(seed),
+                }
+            }
+            // stderr so per-size results stream even if a later size hangs.
+            eprintln!(
+                "n={n} full solve: {solved}/{trials} ({:?}); fails {fails:?}",
+                t0.elapsed()
+            );
+        }
     }
 }
