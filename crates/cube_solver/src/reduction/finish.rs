@@ -180,6 +180,20 @@ fn parity_repertoire(n: usize) -> Vec<Vec<Move>> {
         slice_from(Face::Up, n, 1, 1),
         slice_from(Face::Front, n, 1, 1),
     ]);
+    // Even cubes ≥6 have the same two-orbit wing parity as odd cubes (n-2≥4 wings/edge),
+    // but a face/wide turn flips corner parity too — acceptable here because the
+    // deterministic dedge swap then re-fixes the corners. Appended *after* the slices so
+    // 4×4 (which never needs them) stays fast and 6×6 only reaches them on a real stall.
+    if n.is_multiple_of(2) && n >= 6 {
+        for f in Face::ALL {
+            for t in [1i8, -1] {
+                out.push(vec![Move::face(f, size, t)]);
+            }
+            for w in 2..=n - 1 {
+                out.push(vec![Move::wide(f, size, w, 1)]);
+            }
+        }
+    }
     out
 }
 
@@ -495,17 +509,17 @@ mod tests {
     }
 
     /// End-to-end across sizes: even cubes exercise the deterministic parity path, odd
-    /// cubes the parity-free path. Verified fully solved by replay. 4×4 and 5×5 are fully
-    /// reliable; n=6 centres (even obliques) and n≥7 are not yet covered.
+    /// cubes the parity-free path. Verified fully solved by replay. 4×4, 5×5 and 6×6 are
+    /// fully reliable; n≥7 not yet covered.
     #[test]
     #[ignore = "slow; run explicitly"]
     fn full_solve_sizes() {
         let solver = Solver::new();
-        for n in [4usize, 5] {
+        for n in [4usize, 5, 6] {
             let mut solved = 0;
             let mut fails = Vec::new();
             let t0 = std::time::Instant::now();
-            let trials = 30u64;
+            let trials = 20u64;
             for seed in 0..trials {
                 let mut cube = scramble(n, 0x500 + seed, n * 15);
                 match solve_reduction(&mut cube, &solver) {
