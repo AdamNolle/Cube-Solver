@@ -63,15 +63,22 @@ cube_core + cube_solver  ──wasm-pack──▶  web/pkg/  (WebAssembly)
    - A **"scramble hidden from the solver"** panel proves it isn't cheating: the
      solver only sees the 54 sticker colours, and its solution is usually *shorter*
      than the scramble, so it can't be replaying the inverse.
-3. **Solver race** — three independent engines compete: **meet-in-the-middle**
-   (exact, bidirectional BFS), **beam search**, and an **island genetic algorithm**.
+3. **Solver race / best-path solver** — the panel adapts to the cube:
+   - **3×3** — a real **two-phase (Kociemba) solver** (`cube_solver::kociemba`): it
+     orients the pieces into the UD-slice subgroup (phase 1) then solves the
+     permutation within it (phase 2), using pruning tables built once at startup.
+     It cracks **any** 3×3 scramble in ≤~25 moves — a near-optimal best path, not the
+     scramble inverse — and runs off-thread in the worker.
+   - **2×2** — three independent engines genuinely race: **meet-in-the-middle**
+     (exact, bidirectional BFS), **beam search**, and an **island genetic algorithm**;
+     the shortest verified solution wins.
 
-**What actually solves:** only the **2×2 and 3×3** are solved for real — blind search
-is exponential, so it can't scale further. 4×4 and up render and scramble fully but
-are **visual** (Solve plays back the inverse); the in-app banner tells you which mode
-you're in, and warns when a scramble is too deep to guarantee a solve. Truly
-unlimited solving needs structure-exploiting algorithms (Kociemba's two-phase for the
-3×3, the reduction method for arbitrary N — the latter is the WIP `cube_solver::reduction`).
+**What actually solves:** the **2×2 and 3×3 are solved for real** — the 3×3 by the
+two-phase solver (any scramble), the 2×2 by the engine race. 4×4 and up render and
+scramble fully but are **visual** (Solve plays back the inverse); the in-app banner
+tells you which mode you're in. Real solving past the 3×3 needs the **reduction
+method** for arbitrary N (centers → edge pairing → reduced 3×3 + parity) — that's the
+work-in-progress `cube_solver::reduction` module (feature-gated, not yet wired in).
 
 ### Swarm
 
@@ -96,7 +103,7 @@ card is how many stickers are still out of place.
 | Crate | Responsibility |
 |-------|----------------|
 | `cube_core` | Cube model (`StickerCube`), moves (incl. wide/inner-slice), scramble generation. O(N) in-place layer rotation so huge cubes stay fast. |
-| `cube_solver` | Solver workers (`DeterministicSolver`, `BeamSearchWorker`, `EvolutionaryWorker`) behind a `SolverWorker` trait, run concurrently. Plus a WIP `reduction` module for arbitrary-N solving. |
+| `cube_solver` | The real 3×3 two-phase solver (`kociemba`); solver workers (`DeterministicSolver`, `BeamSearchWorker`, `EvolutionaryWorker`) behind a `SolverWorker` trait, run concurrently; and a feature-gated WIP `reduction` module for arbitrary-N solving. |
 | `solver_store` | SQLite (bundled) persistence of solve history. |
 | `solver_lab_app` | `eframe`/`egui` GUI: 3D viewport, 2D net, the wall-of-cubes grid, controls, history. |
 
@@ -126,6 +133,10 @@ History is stored in an OS-appropriate data directory (Application Support /
 
 ## Solvers
 
+- **Two-phase (Kociemba)** (`cube_solver::kociemba`) — the real 3×3 engine. A
+  cubie-level model with two-phase coordinates (twist/flip/UD-slice, then the
+  permutation), BFS pruning tables, and IDA* search. Solves any 3×3 scramble in
+  ≤~25 moves and is replay-verified against `cube_core`.
 - **DeterministicSolver** — bidirectional (meet-in-the-middle) BFS over a
   scramble-aware move set (including wide turns), returning a replay-verified
   shortest path within budget.
