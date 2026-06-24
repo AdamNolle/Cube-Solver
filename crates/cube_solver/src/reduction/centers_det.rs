@@ -523,7 +523,10 @@ pub fn solve_centers(cube: &mut StickerCube) -> Vec<Move> {
         }
         let w_set: HashSet<Cell> = w_cells.iter().copied().collect();
 
-        let cap = n * n * 8 + 100;
+        // No-progress is deterministic and unchanged, so a stalled iteration would fail
+        // identically forever; give up at once rather than re-running the expensive search
+        // backstop to a large cap (this is what made a failed 6×6 centre solve churn ~90 s).
+        let cap = 0usize;
         let mut guard = 0usize;
         let mut iters = 0usize;
         loop {
