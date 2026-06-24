@@ -262,33 +262,43 @@ pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Mo
 
     // Parity search. The edges stalled — an odd wing permutation in one or more wing orbits
     // (n-2 wings/edge split into orbits with independent parities; larger cubes have more).
+    let rep = parity_repertoire(n);
 
-    // Phase 0 — multi-orbit parity via flipper subsets (the big-cube speedup). The wings
-    // split into K=⌊(n-2)/2⌋ orbits {d, n-1-d}; one disturbance flips one orbit's parity —
-    // a slice at depth d on EVEN cubes (slices don't move corners there), a wide for ODD
-    // cubes (slices launder under their fixed centre). Trying all 2^K subsets of the K
-    // orbit flippers lands on whatever combination of orbits is odd in one shot, instead of
-    // walking long cumulative prefixes or scanning the whole repertoire. Bounded to 2^8.
-    {
-        let size = CubeSize::new(n).unwrap();
-        let k = ((n - 2) / 2).min(8);
-        let flippers: Vec<Move> = (1..=k)
-            .map(|d| {
-                if even {
-                    super::slice_from(Face::Right, n, d, 1)
-                } else {
-                    Move::wide(Face::Right, size, d + 1, 1)
-                }
-            })
-            .collect();
+    // Orbit flippers: the wings split into K=⌊(n-2)/2⌋ orbits {d, n-1-d}, and one
+    // disturbance flips one orbit's parity — a depth-d slice on EVEN cubes (slices don't
+    // move corners there), a width-(d+1) wide on ODD cubes (slices launder under the fixed
+    // centre). Bounded to K≤8.
+    let size = CubeSize::new(n).unwrap();
+    let k = ((n - 2) / 2).min(8);
+    let flippers: Vec<Move> = (1..=k)
+        .map(|d| {
+            if even {
+                super::slice_from(Face::Right, n, d, 1)
+            } else {
+                Move::wide(Face::Right, size, d + 1, 1)
+            }
+        })
+        .collect();
+
+    // Bitmask parity search from a base state: try every NON-EMPTY subset of the orbit
+    // flippers, re-reduce, finish. Lands on whatever combination of odd orbits exists in one
+    // shot. (The no-flip case is the caller's direct finish, not repeated here.)
+    let bitmask_search = |b: &StickerCube, bm: &[Move]| -> Option<(StickerCube, Vec<Move>)> {
         for mask in 1u32..(1u32 << flippers.len()) {
-            let mut c = base.clone();
-            let mut m = base_moves.clone();
+            let mut c = b.clone();
+            let mut m = bm.to_vec();
+            let mut ok = true;
             for (i, fl) in flippers.iter().enumerate() {
                 if mask & (1 << i) != 0 {
-                    c.apply_move(*fl).ok()?;
+                    if c.apply_move(*fl).is_err() {
+                        ok = false;
+                        break;
+                    }
                     m.push(*fl);
                 }
+            }
+            if !ok {
+                continue;
             }
             m.extend(solve_centers(&mut c));
             if !centers_solved(&c) {
@@ -296,13 +306,58 @@ pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Mo
             }
             m.extend(solve_edges(&mut c));
             if try_finish(&mut c, &mut m) {
+                return Some((c, m));
+            }
+        }
+        None
+    };
+
+    // Phase 0 — bitmask parity from the stalled state. This is the big-cube speedup, and it
+    // also clears the common centre stalls (where some flipper subset re-solves the centres).
+    if let Some((c, m)) = bitmask_search(&base, &base_moves) {
+        *cube = c;
+        return Some(m);
+    }
+
+    // Phase 0b — centre-stall recovery + bitmask: if the centres are still stalled (no
+    // flipper subset from the stalled state recovered them), find a disturbance that just
+    // re-solves the centres, then run the bitmask parity search from that centre-solid
+    // state. This keeps the rare "stubborn centre stall" seeds fast instead of dropping to
+    // the slow cumulative walk below.
+    if !centers_solved(&base) {
+        for dist in &rep {
+            let mut rb = base.clone();
+            let mut rm = base_moves.clone();
+            let mut ok = true;
+            for &mv in dist {
+                if rb.apply_move(mv).is_err() {
+                    ok = false;
+                    break;
+                }
+                rm.push(mv);
+            }
+            if !ok {
+                continue;
+            }
+            rm.extend(solve_centers(&mut rb));
+            if !centers_solved(&rb) {
+                continue;
+            }
+            // Direct finish from the recovered state (the recovery may have left the edges
+            // pairable to all-home), then the bitmask for any residual wing parity.
+            let mut rb_e = rb.clone();
+            let mut rm_e = rm.clone();
+            rm_e.extend(solve_edges(&mut rb_e));
+            if try_finish(&mut rb_e, &mut rm_e) {
+                *cube = rb_e;
+                return Some(rm_e);
+            }
+            if let Some((c, m)) = bitmask_search(&rb, &rm) {
                 *cube = c;
                 return Some(m);
             }
         }
     }
-
-    let rep = parity_repertoire(n);
 
     // Phase 1 — cumulative walk (fast, resolves n≤6 and easy n≥7): accumulate disturbances
     // and re-check after each, so prefixes of the walk cover multi-orbit combinations.
@@ -612,6 +667,28 @@ mod tests {
             t0.elapsed()
         );
         assert_eq!(solved, trials, "n=4 not fully reliable: fails {fails:?}");
+    }
+
+    /// Per-seed timing for n=8 and whether the centres stalled on the first pass (the
+    /// remaining slow path). Shows the distribution after the bitmask parity search.
+    #[test]
+    #[ignore = "timing"]
+    fn timing_n8() {
+        use super::super::{centers_solved, solve_centers};
+        let solver = Solver::new();
+        let n = 8usize;
+        for seed in 0..15u64 {
+            let mut probe = scramble(n, 0x500 + seed, n * 15);
+            solve_centers(&mut probe);
+            let centre_stall = !centers_solved(&probe);
+            let mut cube = scramble(n, 0x500 + seed, n * 15);
+            let t0 = std::time::Instant::now();
+            let ok = solve_reduction(&mut cube, &solver).is_some() && cube.is_solved();
+            eprintln!(
+                "seed {seed}: {:?} solved={ok} centre_stall={centre_stall}",
+                t0.elapsed()
+            );
+        }
     }
 
     /// End-to-end across sizes 4–8: even cubes exercise the deterministic parity path, odd
