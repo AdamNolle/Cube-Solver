@@ -11,6 +11,9 @@ rand.workspace = true
 rand_chacha.workspace = true
 rayon = { workspace = true, optional = true }
 serde.workspace = true
+# Used only by the (gated) reduction solver to build probe cubes for exact
+# center-permutation tracking via CubeSnapshot (de)serialization.
+serde_json = { workspace = true, optional = true }
 # Monotonic clock that works on both native and wasm32 (std::time::Instant
 # panics on wasm32-unknown-unknown).
 web-time = "1"
@@ -21,5 +24,5 @@ web-time = "1"
 default = ["parallel"]
 parallel = ["dep:rayon"]
 # Work-in-progress N×N reduction solver; off by default.
-reduction = []
+reduction = ["dep:serde_json"]
 

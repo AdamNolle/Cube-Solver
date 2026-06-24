@@ -30,6 +30,10 @@
 //! N ∈ {4,5,6,7}.
 
 mod centers;
+// Deterministic centre solver (4×4 verified; N≥5 WIP). Not yet wired into the
+// public solver, so its helpers read as dead code in a non-test build.
+#[allow(dead_code)]
+mod centers_det;
 mod edges;
 
 use cube_core::{Axis, CubeState, Face, Move, StickerCube};
