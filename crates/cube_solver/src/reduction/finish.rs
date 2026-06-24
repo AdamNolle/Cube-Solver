@@ -447,8 +447,8 @@ mod tests {
                 }
                 if !wrong.is_empty() {
                     eprintln!("seed {seed} face {f:?}: {} wrong: {:?}", wrong.len(), wrong);
-                    // For each wrong cell, where are the `want`-coloured oblique pieces?
-                    for &(_, _, ty) in &wrong {
+                    // For the first wrong cell, where are the `want`-coloured obliques?
+                    if let Some(&(_, _, ty)) = wrong.first() {
                         let mut res = Vec::new();
                         for g in Face::ALL {
                             for r in 1..n - 1 {
@@ -464,7 +464,6 @@ mod tests {
                             "   want={want:?} ({ty}); {}-coloured obliques: {:?}",
                             want as u8, res
                         );
-                        break;
                     }
                 }
             }
