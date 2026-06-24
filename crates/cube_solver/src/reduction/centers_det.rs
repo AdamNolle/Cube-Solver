@@ -619,6 +619,16 @@ pub fn solve_centers(cube: &mut StickerCube) -> Vec<Move> {
                 continue;
             }
 
+            // Multi-cycle search backstop: shuffle the piece through several positions
+            // when no 1- or 2-cycle places it (even-cube obliques). Bounded, only
+            // reached at a genuine stall.
+            if let Some(seq) = search_bridge(cube, &touch, &w_cells, want, 5, 40_000) {
+                apply_all(cube, &seq);
+                moves.extend(seq);
+                guard = 0;
+                continue;
+            }
+
             guard += 1;
             if guard > cap {
                 if dbg {
@@ -699,6 +709,118 @@ fn two_step(
         }
     }
     None
+}
+
+/// Depth-limited search for when the direct/2-ply steps can't place a piece: the
+/// wanted piece has to be shuffled through several positions (e.g. even-cube oblique
+/// centres, where no single cycle brings it from the reservoir to the target). Tries
+/// sequences of safe cycles — each touching a currently-wrong working cell —
+/// predicted by composing permutations, up to `maxd` deep within a node budget.
+/// Returns the moves of a sequence that strictly increases the working face's
+/// correct count, preserving every finalised face (all cycles are `safe`).
+fn search_bridge(
+    cube: &StickerCube,
+    touch: &HashMap<Cell, Vec<&Cyc>>,
+    w_cells: &[Cell],
+    want: Color,
+    maxd: usize,
+    budget: i64,
+) -> Option<Vec<Move>> {
+    let base = w_cells
+        .iter()
+        .filter(|&&w| color_at(cube, w) == want)
+        .count();
+    let mut budget = budget;
+    let mut path: Vec<Move> = Vec::new();
+    if dfs_fill(
+        cube,
+        touch,
+        w_cells,
+        want,
+        base,
+        &HashMap::new(),
+        0,
+        maxd,
+        &mut budget,
+        &mut path,
+    ) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dfs_fill(
+    cube: &StickerCube,
+    touch: &HashMap<Cell, Vec<&Cyc>>,
+    w_cells: &[Cell],
+    want: Color,
+    base: usize,
+    cum: &HashMap<Cell, Cell>,
+    depth: usize,
+    maxd: usize,
+    budget: &mut i64,
+    path: &mut Vec<Move>,
+) -> bool {
+    if *budget <= 0 {
+        return false;
+    }
+    *budget -= 1;
+    let cur = |w: Cell| cum.get(&w).copied().unwrap_or(w);
+    let correct = w_cells
+        .iter()
+        .filter(|&&w| color_at(cube, cur(w)) == want)
+        .count();
+    if correct > base {
+        return true;
+    }
+    if depth >= maxd {
+        return false;
+    }
+    let wrong: Vec<Cell> = w_cells
+        .iter()
+        .copied()
+        .filter(|&w| color_at(cube, cur(w)) != want)
+        .collect();
+    let empty: Vec<&Cyc> = Vec::new();
+    let mut seen: HashSet<*const Cyc> = HashSet::new();
+    for &wc in &wrong {
+        for &cy in touch.get(&wc).unwrap_or(&empty) {
+            if !seen.insert(cy as *const Cyc) {
+                continue;
+            }
+            // After applying `cy` next, cell x holds the piece from cum(cy.src(x)).
+            let mut new_cum = cum.clone();
+            for &x in &cy.support {
+                let s = cy.perm.get(&x).copied().unwrap_or(x);
+                let c = cum.get(&s).copied().unwrap_or(s);
+                if c == x {
+                    new_cum.remove(&x);
+                } else {
+                    new_cum.insert(x, c);
+                }
+            }
+            let prev = path.len();
+            path.extend_from_slice(&cy.moves);
+            if dfs_fill(
+                cube,
+                touch,
+                w_cells,
+                want,
+                base,
+                &new_cum,
+                depth + 1,
+                maxd,
+                budget,
+                path,
+            ) {
+                return true;
+            }
+            path.truncate(prev);
+        }
+    }
+    false
 }
 
 #[cfg(test)]
