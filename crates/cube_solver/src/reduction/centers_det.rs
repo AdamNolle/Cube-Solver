@@ -826,8 +826,35 @@ fn dfs_fill(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reduction::centers_solved;
+    use crate::reduction::{centers_solved, edges_paired, solve_edges};
     use cube_core::CubeState;
+
+    /// Baseline: centres (deterministic) then the existing greedy edge-pairing.
+    #[test]
+    #[ignore = "edges baseline probe"]
+    fn centres_then_edges_n4() {
+        let mut ok = 0;
+        for seed in 0..6u64 {
+            let mut cube = scramble(4, 0x100 + seed, 40);
+            let _ = solve_centers(&mut cube);
+            if !centers_solved(&cube) {
+                println!("seed {seed}: centres FAILED");
+                continue;
+            }
+            let t0 = std::time::Instant::now();
+            let _ = solve_edges(&mut cube);
+            let paired = edges_paired(&cube);
+            let centres_still = centers_solved(&cube);
+            println!(
+                "seed {seed}: edges_paired={paired} centres_intact={centres_still} ({:?})",
+                t0.elapsed()
+            );
+            if paired && centres_still {
+                ok += 1;
+            }
+        }
+        println!("n=4 centres+edges: {ok}/6");
+    }
 
     fn lcg(s: &mut u64) -> u64 {
         *s = s

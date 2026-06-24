@@ -35,6 +35,8 @@ mod centers;
 #[allow(dead_code)]
 mod centers_det;
 mod edges;
+#[allow(dead_code)]
+mod finish;
 
 use cube_core::{Axis, CubeState, Face, Move, StickerCube};
 
