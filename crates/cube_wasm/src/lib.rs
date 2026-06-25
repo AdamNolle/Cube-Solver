@@ -252,9 +252,52 @@ impl CubeLab {
         )
     }
 
+    /// Solve a 4×4+ cube with the NxN reduction method (centres → edges → 3×3 finish →
+    /// parity). Same JSON shape as `try_kociemba`, or `None` if the reduction fails (then
+    /// `solve` falls back to the legacy engine race). Solves a CLONE — `solve_reduction`
+    /// mutates its cube to solved — so `self.cube` stays scrambled for the animation.
+    fn try_reduction(&mut self) -> Option<String> {
+        let mut work = self.cube.clone();
+        let solution = with_kociemba(|s| cube_solver::reduction::solve_reduction(&mut work, s))?;
+        let size = CubeSize::new(self.n).ok()?;
+        let mut moves_json: Vec<serde_json::Value> = Vec::new();
+        let mut notation: Vec<String> = Vec::new();
+        for m in &solution {
+            notation.push(m.notation(size));
+            let axis = axis_index(m.axis);
+            let (count, dir): (usize, i32) = match m.turns.rem_euclid(4) {
+                1 => (1, 1),
+                2 => (2, 1),
+                3 => (1, -1),
+                _ => (0, 1),
+            };
+            for layer in m.layer_start..=m.layer_end {
+                for _ in 0..count {
+                    moves_json
+                        .push(serde_json::json!({ "axis": axis, "layer": layer, "dir": dir }));
+                }
+            }
+        }
+        self.solution = solution;
+        let htm = notation.len();
+        Some(
+            serde_json::json!({
+                "found": true,
+                "winner": "reduction",
+                "moveCount": htm,
+                "elapsedMs": 0,
+                "moves": moves_json,
+                "notation": notation,
+                "lanes": [ { "id": "reduction", "pct": 100, "moveCount": htm, "label": "reduction", "solved": true } ],
+            })
+            .to_string(),
+        )
+    }
+
     /// Run the solver on the current state and store the winning (fewest-move,
-    /// replay-verified) solution. 3×3 uses the two-phase solver; larger cubes use the
-    /// legacy engine race. Returns a JSON summary.
+    /// replay-verified) solution. 3×3 uses the two-phase solver; 4×4+ (up to
+    /// `MAX_REDUCTION`) uses the reduction method; other sizes use the legacy engine
+    /// race. Returns a JSON summary.
     pub fn solve(&mut self, max_depth: usize, time_ms: f64) -> String {
         let snapshot = self.cube.clone_snapshot();
         // 3×3: the two-phase (Kociemba) solver returns a verified solution for ANY
@@ -262,6 +305,16 @@ impl CubeLab {
         // through to the legacy search only if it somehow fails.
         if self.n == 3 {
             if let Some(json) = self.try_kociemba() {
+                return json;
+            }
+        }
+        // 4×4 and up: the reduction method returns a verified real solution. Capped at
+        // a size that still solves within an interactive wait (this runs in the solver
+        // Web Worker, so even a multi-second solve never blocks the UI); larger cubes
+        // stay on the legacy/visual path below.
+        const MAX_REDUCTION: usize = 8;
+        if self.n > 3 && self.n <= MAX_REDUCTION {
+            if let Some(json) = self.try_reduction() {
                 return json;
             }
         }
@@ -730,6 +783,38 @@ mod tests {
                 );
             }
             assert!(lab.is_solved(), "returned solution did not solve n={n}");
+        }
+    }
+
+    /// 4×4–6×6 route through the REAL reduction solver (winner == "reduction", not the
+    /// legacy/visual fallback) under deep inner+outer scrambles, and the returned moves
+    /// genuinely solve the cube — the end-to-end wiring of `try_reduction`.
+    #[test]
+    fn reduction_path_solves() {
+        for n in [4usize, 5] {
+            let mut lab = CubeLab::new(n);
+            let mut rng = Rng::new(99 + n as u64);
+            for _ in 0..(n * 6) {
+                let axis = rng.below(3) as u8;
+                let layer = rng.below(n); // inner slices too, not just outer
+                let dir = if rng.below(2) == 0 { 1 } else { -1 };
+                lab.apply_design_move(axis, layer, dir);
+            }
+            assert!(!lab.is_solved(), "n={n} should be scrambled");
+            let v: serde_json::Value = serde_json::from_str(&lab.solve(8, 3000.0)).unwrap();
+            assert!(v["found"].as_bool().unwrap(), "n={n} no solution");
+            assert_eq!(
+                v["winner"], "reduction",
+                "n={n} did not use the reduction solver"
+            );
+            for m in v["moves"].as_array().unwrap() {
+                lab.apply_design_move(
+                    m["axis"].as_u64().unwrap() as u8,
+                    m["layer"].as_u64().unwrap() as usize,
+                    m["dir"].as_i64().unwrap() as i32,
+                );
+            }
+            assert!(lab.is_solved(), "n={n} reduction solution did not solve");
         }
     }
 

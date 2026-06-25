@@ -9,8 +9,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cube_core = { path = "../cube_core" }
-# Single-threaded build of the solver (no rayon / OS threads) for wasm.
-cube_solver = { path = "../cube_solver", default-features = false }
+# Single-threaded build of the solver (no rayon / OS threads) for wasm. `reduction`
+# enables the NxN reduction solver (centres→edges→3×3→parity) so 4×4+ solve for real;
+# it adds only serde_json (already a dep), no threads.
+cube_solver = { path = "../cube_solver", default-features = false, features = ["reduction"] }
 wasm-bindgen = "0.2"
 serde = { workspace = true }
 serde_json.workspace = true
