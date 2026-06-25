@@ -666,7 +666,13 @@ class Component extends DCLogic {
     const slab = new T.Mesh(new T.BoxGeometry(sizes[0], sizes[1], sizes[2]), new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22, depthWrite: false, blending: T.AdditiveBlending }));
     slab.position[['x','y','z'][m.axis]] = (m.layer - this.half) * this.step;
     pivot.add(slab);
-    this.activeMove = { m, sel, pivot, slab, t: 0, dur: this.speedDur, axisName: ['x','y','z'][m.axis] };
+    // Per-move duration: keep the leisurely default for short (3×3) solutions, but scale
+    // down for long reduction solutions so the whole replay stays ~14 s at Normal speed
+    // (floored at ~one frame). Without this a 475-move 4×4 reduction solve, at 0.52 s/move,
+    // would animate for 4 minutes (and an 8×8 for over half an hour).
+    const _scale = Math.min(1, 26.9 / Math.max(1, this.totalMoves));
+    const _dur = Math.max(0.014, this.speedDur * _scale);
+    this.activeMove = { m, sel, pivot, slab, t: 0, dur: _dur, axisName: ['x','y','z'][m.axis] };
   }
 
   finalizeMove() {
