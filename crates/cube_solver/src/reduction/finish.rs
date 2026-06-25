@@ -699,6 +699,11 @@ mod tests {
     fn full_solve_sizes() {
         let solver = Solver::new();
         for n in [4usize, 5, 6, 7, 8] {
+            // Warm the per-size libraries (one-time ~5–6 s build for big cubes) so the
+            // reported time below is honest *per-solve*, not build-inflated.
+            let mut warm = scramble(n, 0x4ff, n * 15);
+            let _ = solve_reduction(&mut warm, &solver);
+
             let mut solved = 0;
             let mut fails = Vec::new();
             let t0 = std::time::Instant::now();
@@ -713,8 +718,9 @@ mod tests {
             }
             // stderr so per-size results stream even if a later size hangs.
             eprintln!(
-                "n={n} full solve: {solved}/{trials} ({:?}); fails {fails:?}",
-                t0.elapsed()
+                "n={n} full solve: {solved}/{trials} in {:?} ({:?}/solve, libs warm); fails {fails:?}",
+                t0.elapsed(),
+                t0.elapsed() / trials as u32
             );
             assert_eq!(solved, trials, "n={n} not fully reliable: fails {fails:?}");
         }
