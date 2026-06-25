@@ -327,7 +327,13 @@ fn solve_reduction_core(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<M
     // flippers, re-reduce, finish. Lands on whatever combination of odd orbits exists in one
     // shot. (The no-flip case is the caller's direct finish, not repeated here.)
     let bitmask_search = |b: &StickerCube, bm: &[Move]| -> Option<(StickerCube, Vec<Move>)> {
-        for mask in 1u32..(1u32 << flippers.len()) {
+        // Try subsets in order of increasing size (popcount): a parity is usually a few odd
+        // orbits, so flipping the FEWEST first finds the minimal odd set in the fewest slow
+        // re-reductions (a single high-index orbit needed up to 2^K tries in binary order;
+        // by popcount it's ≤K). Big win at large even sizes, and yields a shorter solution.
+        let mut masks: Vec<u32> = (1u32..(1u32 << flippers.len())).collect();
+        masks.sort_by_key(|m| (m.count_ones(), *m));
+        for mask in masks {
             let mut c = b.clone();
             let mut m = bm.to_vec();
             let mut ok = true;
