@@ -361,11 +361,17 @@ fn solve_reduction_core(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<M
         None
     };
 
-    // Phase 0 — bitmask parity from the stalled state. This is the big-cube speedup, and it
-    // also clears the common centre stalls (where some flipper subset re-solves the centres).
-    if let Some((c, m)) = bitmask_search(&base, &base_moves) {
-        *cube = c;
-        return Some(m);
+    // Phase 0 — bitmask parity. Run it only when the centres are SOLVED: if they stalled, each
+    // mask's full re-reduction (centres + edges) is slow and mostly can't recover the centres,
+    // so skip straight to the leaner centre-recovery in Phase 0b (which uses centres-only
+    // checks). For a solved-centre cube this is the big-cube parity speedup, unchanged. (Big
+    // win at large sizes where a stalled cube otherwise grinds through up to 2^K slow masks
+    // before reaching Phase 0b.)
+    if centers_solved(&base) {
+        if let Some((c, m)) = bitmask_search(&base, &base_moves) {
+            *cube = c;
+            return Some(m);
+        }
     }
 
     // Phase 0b — centre-stall recovery + bitmask: if the centres are still stalled (no
