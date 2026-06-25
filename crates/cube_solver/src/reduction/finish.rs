@@ -691,6 +691,45 @@ mod tests {
         }
     }
 
+    /// Robustness stress test: a fresh, unseen seed range and DEEPER scrambles across all
+    /// sizes, validated by replaying the returned move list to solved. Confirms the solver
+    /// is reliable beyond the asserted `full_solve_sizes` seeds.
+    #[test]
+    #[ignore = "slow; run explicitly"]
+    fn stress_reliability() {
+        let solver = Solver::new();
+        let mut total_fail = 0;
+        for n in [4usize, 5, 6, 7, 8] {
+            let mut warm = scramble(n, 0x9000, n * 20);
+            let _ = solve_reduction(&mut warm, &solver);
+            let (mut ok, mut fails) = (0u64, Vec::new());
+            let trials: u64 = if n <= 6 { 30 } else { 15 };
+            for seed in 0..trials {
+                let mut cube = scramble(n, 0x9000 + seed, n * 20);
+                let fresh = cube.clone();
+                let solved = match solve_reduction(&mut cube, &solver) {
+                    Some(moves) => {
+                        // replay-validate the returned (simplified) move list
+                        let mut chk = fresh.clone();
+                        for &m in &moves {
+                            chk.apply_move(m).unwrap();
+                        }
+                        cube.is_solved() && chk.is_solved()
+                    }
+                    None => false,
+                };
+                if solved {
+                    ok += 1;
+                } else {
+                    fails.push(seed);
+                }
+            }
+            total_fail += fails.len();
+            eprintln!("n={n}: {ok}/{trials} (depth {}); fails {fails:?}", n * 20);
+        }
+        assert_eq!(total_fail, 0, "stress test found reliability gaps");
+    }
+
     /// End-to-end 4×4: full reduction (centres → edges → finish + parity), verified
     /// fully solved by replay over many scrambles.
     #[test]
