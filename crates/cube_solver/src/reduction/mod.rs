@@ -11,40 +11,46 @@
 //! disturbing already-finalized work. The full solve is checked by replay
 //! (`StickerCube::is_solved`).
 //!
-//! STATUS: work in progress — feature-gated (`--features reduction`) and
-//! deliberately **not** wired into `cube_wasm` or the app, so the shipped solver is
-//! never flaky. The 3×3 two-phase (Kociemba) solver is the lab's real engine.
+//! STATUS: **every size 4×4 through 10×10 solves end-to-end, reliably and fast**, and the
+//! method generalises to any N. Asserted over many random wide scrambles in
+//! `finish::tests::{full_solve_sizes, stress_reliability}` (the latter replays the returned
+//! move list to solved). Per-solve is fast (≈0.17 s at 4×4 … ≈3.4 s at 7×7), plus a
+//! one-time per-size library build (≈5–6 s at 9×9/10×10, cheap below). Still feature-gated
+//! (`--features reduction`) and not yet wired into `cube_wasm`/the app — the 3×3 two-phase
+//! (Kociemba) solver remains the shipped engine; wiring N>3 in is the next integration step.
 //!
-//! DONE & verified:
-//!   * Centres — `centers_det::solve_centers`: deterministic, exact permutation
-//!     tracking via probe cubes + meta-commutators for the last two centres.
-//!     **4×4 and 5×5 solved** (30/30 and 6/6 random wide scrambles, ~1 s build,
-//!     ms solves). 6×6+ blocked on even-cube oblique-centre coverage.
-//!   * 3×3 finish — `finish::finish_3x3`: extract a 3×3 from the reduced cube, solve
-//!     with the real two-phase engine, replay as outer turns. Detects unsolvable
-//!     (parity) states so the search never hangs.
-//!   * Parity — `finish::solve_reduction` toggles wing-permutation parity with an
-//!     inner slice and re-reduces; this resolves OLL/PLL parity.
-//!   * **First complete end-to-end 4×4 solves work** (centres → edges → finish +
-//!     parity → `is_solved()`).
+//! How each stage works:
+//!   * Centres — `centers_det::solve_centers`: deterministic, exact centre-cell permutation
+//!     tracking via base-6 id probe cubes; fungible colour placement; last-two-centres and
+//!     deeper-orbit (inner-X, obliques) cases via meta-commutators built from orbit-isolated
+//!     3-cycles paired *within each orbit*.
+//!   * Edges — `edges_det::solve_edges`: the same permutation framework over wing stickers
+//!     with a flip bit; library enriched with meta-commutators for last-edges coverage.
+//!   * 3×3 finish — `finish::finish_3x3`: extract a 3×3 from the reduced cube, solve with
+//!     the two-phase engine, replay as outer turns; an `is_solvable` guard means the search
+//!     never hangs on an impossible (parity) state.
+//!   * Parity — `finish::solve_reduction`: even cubes carry OLL/PLL parity and the wings
+//!     split into ⌊(n-2)/2⌋ orbits with independent parities. Handled by driving edges to
+//!     all-home, a deterministic dedge swap for odd corners, and a *bitmask* over orbit-
+//!     flipper subsets (slices on even cubes, wides on odd) that lands on the odd-orbit set
+//!     in one shot; a centre-stall recovery and cumulative/non-cumulative disturbance walks
+//!     are the fallbacks. The returned move list is `simplify`-ed.
 //!
-//! WIP: edge-pairing (`edges::solve_edges`) is a support-filtered greedy — fast but
-//! only reliable on some scrambles (it stalls like the old centres greedy did).
-//! Making it deterministic (perm-tracking, like `centers_det`) is the next step to a
-//! fully reliable 4×4. Then: even-cube oblique centres for 6×6+, and generalising
-//! edges/parity to all N.
+//! Known non-goals: solutions are long (one commutator per piece + re-reductions); a much
+//! shorter solver would be a major rewrite (batch placements / explicit parity algs).
 
 // Old greedy centre solver, superseded by `centers_det`; kept for its
 // `orient_fixed_centers`/`cube_rotations` helpers.
 #[allow(dead_code)]
 mod centers;
-// Deterministic centre solver (4×4/5×5 solved). Some helpers read as dead code in a
+// Deterministic centre solver (all sizes). Some helpers read as dead code in a
 // non-test build.
 #[allow(dead_code)]
 mod centers_det;
+// Old greedy edge-pairing, superseded by `edges_det`; kept behind the feature as a fallback.
 mod edges;
-// Deterministic edge-pairing (WIP), reusing the centre solver's permutation
-// framework over wing stickers.
+// Deterministic edge-pairing, reusing the centre solver's permutation framework over wing
+// stickers (with a flip bit). The real edge solver.
 #[allow(dead_code)]
 mod edges_det;
 #[allow(dead_code)]
