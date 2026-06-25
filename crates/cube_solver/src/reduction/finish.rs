@@ -197,12 +197,55 @@ fn parity_repertoire(n: usize) -> Vec<Vec<Move>> {
     out
 }
 
+/// Shorten a move list by collapsing maximal runs of same-axis moves — which all commute
+/// (parallel layers don't interfere) — summing turns per layer and dropping zeros. Iterated
+/// to a fixed point so cancellations cascade (e.g. `R U U' R' → ∅`). Effect-preserving:
+/// reordering within a same-axis run and merging same-layer turns leaves the permutation
+/// unchanged. Solutions built from many concatenated commutators accumulate exactly these
+/// boundary cancellations, so this safely cuts the move count.
+fn simplify(moves: Vec<Move>) -> Vec<Move> {
+    let mut cur = moves;
+    loop {
+        let mut out: Vec<Move> = Vec::with_capacity(cur.len());
+        let mut i = 0;
+        while i < cur.len() {
+            let axis = cur[i].axis;
+            let mut acc: Vec<((usize, usize), i32)> = Vec::new();
+            let mut j = i;
+            while j < cur.len() && cur[j].axis == axis {
+                let key = (cur[j].layer_start, cur[j].layer_end);
+                match acc.iter_mut().find(|(k, _)| *k == key) {
+                    Some(e) => e.1 += cur[j].turns as i32,
+                    None => acc.push((key, cur[j].turns as i32)),
+                }
+                j += 1;
+            }
+            for ((ls, le), t) in acc {
+                let tt = t.rem_euclid(4);
+                if tt != 0 {
+                    let turns = if tt == 3 { -1 } else { tt as i8 };
+                    out.push(Move::new(axis, ls, le, turns));
+                }
+            }
+            i = j;
+        }
+        if out.len() == cur.len() {
+            return out;
+        }
+        cur = out;
+    }
+}
+
 /// Full NxN reduction solve: centres → edges → 3×3 finish. On even cubes the reduced
 /// 3×3 can carry OLL/PLL parity (an impossible 3×3 state); we disturb the wing
 /// permutation with a varied repertoire of inner slices and re-reduce, which makes it
 /// solvable. Returns the complete move list (applied to `cube`), or `None` if a stage
-/// fails.
+/// fails. The returned list is `simplify`-ed (adjacent same-axis cancellations).
 pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Move>> {
+    solve_reduction_core(cube, solver).map(simplify)
+}
+
+fn solve_reduction_core(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Move>> {
     use super::edges_det::{at_target, home_swapped_target, home_targets, solve_to_target};
     use super::{centers_solved, solve_centers, solve_edges};
     let dbg = std::env::var("RDBG").is_ok();
@@ -359,8 +402,12 @@ pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Mo
         }
     }
 
-    // Phase 1 — cumulative walk (fast, resolves n≤6 and easy n≥7): accumulate disturbances
-    // and re-check after each, so prefixes of the walk cover multi-orbit combinations.
+    // Phase 1 — cumulative walk: accumulate disturbances and re-check after each, so
+    // prefixes cover multi-orbit/centre-recovery combinations no single disturbance and no
+    // flipper subset reach. Kept FIRST because for odd cubes the walk reaches the needed
+    // parity in far fewer re-reductions than scanning singles does — i.e. it's the *fast*
+    // path here, which the directive prioritises. (It can yield long solutions on the rare
+    // hardest seeds; `simplify` trims them, and length is a non-goal vs reliability+speed.)
     {
         let mut c = base.clone();
         let mut m = base_moves.clone();
@@ -381,10 +428,9 @@ pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Mo
         }
     }
 
-    // Phase 2 — non-cumulative singles: try each disturbance from THIS SAME stalled state.
-    // A single face/wide/slice flips a specific orbit's parity, but only relative to the
-    // stall; stacking disturbances (Phase 1) never tests the lone flip a single odd orbit
-    // needs. This catches the cases the cumulative walk's fixed path misses.
+    // Phase 2 — non-cumulative singles: try each disturbance from THIS SAME stalled state,
+    // catching the lone flip a single odd orbit needs that the cumulative walk's fixed path
+    // missed.
     for dist in &rep {
         let mut c = base.clone();
         let mut m = base_moves.clone();
@@ -667,6 +713,41 @@ mod tests {
             t0.elapsed()
         );
         assert_eq!(solved, trials, "n=4 not fully reliable: fails {fails:?}");
+    }
+
+    /// Solution length (move count) per size — a quality dimension. The reduction method
+    /// isn't optimal, and disturbances/re-reductions inflate it; this checks it's sane.
+    #[test]
+    #[ignore = "diagnostic"]
+    fn solution_length() {
+        let solver = Solver::new();
+        for n in [4usize, 5, 6, 7, 8] {
+            let mut warm = scramble(n, 0x4ff, n * 15);
+            let _ = solve_reduction(&mut warm, &solver);
+            let (mut sum, mut max, mut cnt) = (0usize, 0usize, 0usize);
+            for seed in 0..8u64 {
+                let mut cube = scramble(n, 0x500 + seed, n * 15);
+                let fresh = cube.clone();
+                if let Some(moves) = solve_reduction(&mut cube, &solver) {
+                    // Validate the (simplified) move list actually solves a fresh scramble.
+                    let mut check = fresh.clone();
+                    for &m in &moves {
+                        check.apply_move(m).unwrap();
+                    }
+                    assert!(
+                        check.is_solved(),
+                        "n={n} seed {seed}: returned moves don't solve"
+                    );
+                    sum += moves.len();
+                    max = max.max(moves.len());
+                    cnt += 1;
+                }
+            }
+            eprintln!(
+                "n={n}: avg {} moves, max {max} (over {cnt} solves)",
+                sum / cnt.max(1)
+            );
+        }
     }
 
     /// Per-seed timing for n=8 and whether the centres stalled on the first pass (the
