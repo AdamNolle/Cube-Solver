@@ -1095,7 +1095,16 @@ class Component extends DCLogic {
         const p = Math.min(a.t / a.dur, 1);
         const e = 1 - Math.pow(1 - p, 3);
         a.pivot.rotation[a.axisName] = a.m.dir * (Math.PI / 2) * e;
-        if (a.t >= a.dur) { this.finalizeMove(); this.movesDone++; this.updateHUD(); }
+        if (a.t >= a.dur) {
+          this.finalizeMove(); this.movesDone++;
+          // Batch very long (reduction) solutions: advance extra moves instantly this frame
+          // so the whole replay stays ~14 s (≈840 frames) instead of one-move-per-frame — a
+          // 24k-move solve would otherwise take ~7 min even after the per-move speed-up, and
+          // an 8×8 (~3.8k) ~50 s. Short 3×3 solves keep one move per frame (extra = 0).
+          let extra = Math.ceil(this.totalMoves / 840) - 1;
+          while (extra-- > 0 && this.queue.length) { this.applyInstant(this.queue.shift()); this.movesDone++; }
+          this.updateHUD();
+        }
         else this.updateHUD();
       } else if (this.queue.length) {
         this.startMove(this.queue.shift());
