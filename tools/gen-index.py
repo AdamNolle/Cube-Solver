@@ -21,7 +21,7 @@ body = re.sub(r'onChange="\{\{\s*(\w+)\s*\}\}"', r'data-onchange="\1"', body)
 # the (real) solver works — the solver only handles 2×2/3×3.
 body = body.replace(
     'Renders any size. Past 11³ the faces are sampled — exactly how the real solver handles giant cubes.',
-    'Renders any size. Past 11³ the cube switches to sampled texture mode for speed. Only the 2×2 and 3×3 are solved for real — larger sizes are visual.')
+    'Renders any size. Past 11³ the cube switches to sampled texture mode for speed. 2×2 through 8×8 are solved for real (3×3 two-phase, 4×4–8×8 reduction); larger sizes are visual.')
 assert '{{' not in body
 
 SHIM = r'''
@@ -134,9 +134,10 @@ WIRE = r'''
       this.resetSolved(true);
       const N = this.n;
       // 2×2/3×3 can be inverted by the real (outer-move) solver, so scramble with
-      // outer faces only. Bigger cubes can't be solved by search anyway, so mix
-      // EVERY layer for a proper-looking full scramble (visual).
-      const solvable = (N <= 3) && !!this.lab;
+      // outer faces only (the two-phase solver inverts outer turns). 4×4+ up to
+      // SOLVE_MAX_N go through the reduction solver, which handles ANY scramble, so
+      // mix every layer for a proper full scramble; bigger cubes stay visual-only.
+      const solvable = (N <= SOLVE_MAX_N) && !!this.lab;
       // Never scramble a solvable cube deeper than the exact solver's reach, or
       // Solve would search to SOLVE_MAX_DEPTH and find no solution.
       const depth = solvable ? Math.min(this.scrambleDepth, N >= 3 ? SOLVE_REAL_DEPTH : SOLVE_MAX_DEPTH) : this.scrambleDepth;
@@ -146,13 +147,13 @@ WIRE = r'''
         let axis;
         do { axis = (Math.random()*3)|0; } while (axis===prev && Math.random()<0.55);
         prev = axis;
-        const layer = solvable ? (Math.random()<0.5 ? 0 : N-1) : (Math.random()*N)|0;
+        const layer = (N <= 3) ? (Math.random()<0.5 ? 0 : N-1) : (Math.random()*N)|0;
         const dir = Math.random()<0.5 ? 1 : -1;
         this.lastScramble.push({axis, layer, dir});
       }
       // Apply the whole scramble instantly — fast at any depth, no stuck queue.
       for (const m of this.lastScramble) this.applyInstant(m);
-      // Mirror into the solver's cube only when it can actually invert it (N<=3).
+      // Mirror into the solver's cube only when it can actually solve it (N<=SOLVE_MAX_N).
       if (solvable){ this.lab.reset(); for (const m of this.lastScramble) this.lab.apply_design_move(m.axis, m.layer, m.dir); }
       this.queue = []; this.activeMove = null;
       this.movesDone = depth; this.totalMoves = depth;
@@ -226,9 +227,9 @@ WIRE = r'''
       // Clear last solve's real-solver data so a visual (N>3) solve can't show a
       // stale 3×3 notation/count; the real branch repopulates it via onSolveResult.
       this.realNotation = null; this.realMoveCount = null;
-      // Visual-only cubes (N>3): animate the inverse with HONEST lanes — no real
-      // search. Queue is filled synchronously so the loop never finishes early.
-      if (this.n > 3 || !this.lab){
+      // Visual-only cubes (N > SOLVE_MAX_N): animate the inverse with HONEST lanes — no
+      // real search. Queue is filled synchronously so the loop never finishes early.
+      if (this.n > SOLVE_MAX_N || !this.lab){
         var inv = this.lastScramble.slice().reverse().map(function(m){ return {axis:m.axis, layer:m.layer, dir:-m.dir}; });
         this.lastSolution = inv;
         this.queue = inv.slice();
@@ -595,7 +596,7 @@ WIRE = r'''
     // ---------- Solvability guidance: always say what Solve will do ----------
     // SOLVE_MAX_DEPTH: reach of the legacy search (2x2). SOLVE_REAL_DEPTH: the 3x3
     // now uses the two-phase (Kociemba) solver, which cracks ANY scramble.
-    var SOLVE_MAX_N = 3, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
+    var SOLVE_MAX_N = 8, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
 
     // Make the "Solver Race" panel honest about which engine actually runs:
     //   • 2×2 — three real engines race (meet-in-the-middle, beam, island genetic);
@@ -665,7 +666,7 @@ WIRE = r'''
       }
       if (n > SOLVE_MAX_N){
         ban.style.cssText = ban._base + 'background:#FBF4E8;color:#9A6A1E;border-color:#F0E0C2;';
-        ban.innerHTML = '<b>'+n+'×'+n+' is visual.</b> Only the 2×2 and 3×3 are solved for real by the engines; bigger cubes scramble fully and Solve plays back a visual demo.';
+        ban.innerHTML = '<b>'+n+'×'+n+' is visual.</b> 2×2 through '+SOLVE_MAX_N+'×'+SOLVE_MAX_N+' are solved for real; bigger cubes scramble fully and Solve plays back a visual demo.';
       } else if (d > SOLVE_MAX_DEPTH){
         ban.style.cssText = ban._base + 'background:#FBF4E8;color:#9A6A1E;border-color:#F0E0C2;';
         ban.innerHTML = '<b>Deep scramble (depth '+d+').</b> The exact solver may run out of budget. Keep depth ≤ '+SOLVE_MAX_DEPTH+' for a guaranteed solve.';
@@ -692,7 +693,7 @@ WIRE = r'''
       }
       ['4','5','7','20','50','100','500','1000'].forEach(function(v){
         var b = self.root.querySelector('[data-n="'+v+'"]');
-        if(b){ b.style.opacity='0.5'; b.title='Visual only — solved for real on 2×2 and 3×3'; }
+        if(b){ b.style.opacity='0.5'; b.title='Visual only — solved for real on 2×2 through '+SOLVE_MAX_N+'×'+SOLVE_MAX_N; }
       });
       var sd2 = self.root.querySelector('[data-scramble]');
       if (sd2) sd2.addEventListener('input', function(){ setTimeout(function(){ refreshSolvability(self); }, 0); });
