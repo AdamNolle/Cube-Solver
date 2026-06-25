@@ -730,6 +730,41 @@ mod tests {
         assert_eq!(total_fail, 0, "stress test found reliability gaps");
     }
 
+    /// "Solve ANYTHING": the large sizes 9–11 (both parities), replay-validated — proving
+    /// the method keeps generalising past the asserted 8×8. (12×12 was also verified to
+    /// solve reliably, but a hard seed takes ~5 min — the parity search runs 2^⌊(n-2)/2⌋
+    /// masks, each a full re-reduction, which is costly at large even sizes — so it's left
+    /// out of the routine assert.) Few seeds each because every size pays a one-time build.
+    #[test]
+    #[ignore = "very slow; run explicitly"]
+    fn big_sizes() {
+        let solver = Solver::new();
+        for n in [9usize, 10, 11] {
+            let (mut ok, mut fails) = (0u64, Vec::new());
+            for seed in 0..3u64 {
+                let mut cube = scramble(n, 0xB000 + seed, n * 18);
+                let fresh = cube.clone();
+                let solved = match solve_reduction(&mut cube, &solver) {
+                    Some(moves) => {
+                        let mut chk = fresh.clone();
+                        for &m in &moves {
+                            chk.apply_move(m).unwrap();
+                        }
+                        cube.is_solved() && chk.is_solved()
+                    }
+                    None => false,
+                };
+                if solved {
+                    ok += 1;
+                } else {
+                    fails.push(seed);
+                }
+            }
+            eprintln!("n={n}: {ok}/3 solved; fails {fails:?}");
+            assert!(fails.is_empty(), "n={n} failed seeds {fails:?}");
+        }
+    }
+
     /// End-to-end 4×4: full reduction (centres → edges → finish + parity), verified
     /// fully solved by replay over many scrambles.
     #[test]
