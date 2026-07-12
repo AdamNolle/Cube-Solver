@@ -21,7 +21,7 @@ body = re.sub(r'onChange="\{\{\s*(\w+)\s*\}\}"', r'data-onchange="\1"', body)
 # the (real) solver works — the solver only handles 2×2/3×3.
 body = body.replace(
     'Renders any size. Past 11³ the faces are sampled — exactly how the real solver handles giant cubes.',
-    'Renders any size. Past 11³ the cube switches to sampled texture mode for speed. 2×2 through 8×8 are solved for real (3×3 two-phase, 4×4–8×8 reduction); larger sizes are visual.')
+    'Renders any size. Past 11³ the cube switches to sampled texture mode for speed. 2×2 through 11×11 are solved for real (3×3 two-phase, 4×4–11×11 reduction); larger sizes are visual.')
 assert '{{' not in body
 
 SHIM = r'''
@@ -596,7 +596,7 @@ WIRE = r'''
     // ---------- Solvability guidance: always say what Solve will do ----------
     // SOLVE_MAX_DEPTH: reach of the legacy search (2x2). SOLVE_REAL_DEPTH: the 3x3
     // now uses the two-phase (Kociemba) solver, which cracks ANY scramble.
-    var SOLVE_MAX_N = 8, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
+    var SOLVE_MAX_N = 11, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
 
     // Make the "Solver Race" panel honest about which engine actually runs:
     //   • 2×2 — three real engines race (meet-in-the-middle, beam, island genetic);

@@ -130,7 +130,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
             <button data-n="500" data-onclick="onNClick" style="flex:1;height:30px;border-radius:9px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;background:#F4F3EF;color:#6E6A61;transition:.16s;">500</button>
             <button data-n="1000" data-onclick="onNClick" style="flex:1;height:30px;border-radius:9px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;background:#F4F3EF;color:#6E6A61;transition:.16s;">1000</button>
           </div>
-          <div style="font-size:11px;color:#B7B3AA;margin-top:9px;line-height:1.45;">Renders any size. Past 11³ the cube switches to sampled texture mode for speed. 2×2 through 8×8 are solved for real (3×3 two-phase, 4×4–8×8 reduction); larger sizes are visual.</div>
+          <div style="font-size:11px;color:#B7B3AA;margin-top:9px;line-height:1.45;">Renders any size. Past 11³ the cube switches to sampled texture mode for speed. 2×2 through 11×11 are solved for real (3×3 two-phase, 4×4–11×11 reduction); larger sizes are visual.</div>
 
           <div style="height:1px;background:#F1EFEA;margin:16px 0;"></div>
 
@@ -1710,7 +1710,7 @@ class Component extends DCLogic {
     // ---------- Solvability guidance: always say what Solve will do ----------
     // SOLVE_MAX_DEPTH: reach of the legacy search (2x2). SOLVE_REAL_DEPTH: the 3x3
     // now uses the two-phase (Kociemba) solver, which cracks ANY scramble.
-    var SOLVE_MAX_N = 8, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
+    var SOLVE_MAX_N = 11, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
 
     // Make the "Solver Race" panel honest about which engine actually runs:
     //   • 2×2 — three real engines race (meet-in-the-middle, beam, island genetic);

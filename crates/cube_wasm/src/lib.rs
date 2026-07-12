@@ -309,10 +309,10 @@ impl CubeLab {
             }
         }
         // 4×4 and up: the reduction method returns a verified real solution. Capped at
-        // a size that still solves within an interactive wait (this runs in the solver
-        // Web Worker, so even a multi-second solve never blocks the UI); larger cubes
-        // stay on the legacy/visual path below.
-        const MAX_REDUCTION: usize = 8;
+        // 11×11 — beyond that the one-time library build + solve exceed a reasonable
+        // interactive wait (12×12 ~5 min). This runs in the solver Web Worker, so even a
+        // multi-second solve never blocks the UI; larger cubes stay on the visual path.
+        const MAX_REDUCTION: usize = 11;
         if self.n > 3 && self.n <= MAX_REDUCTION {
             if let Some(json) = self.try_reduction() {
                 return json;
