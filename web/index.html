@@ -120,7 +120,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
           </div>
 
           <div style="display:flex;align-items:center;gap:11px;margin-top:13px;">
-            <input data-nslider type="range" min="2" max="50" step="1" data-onchange="onNSlider" style="flex:1;accent-color:#161514;height:4px;cursor:pointer;">
+            <input data-nslider type="range" min="0" max="1000" step="1" data-onchange="onNSlider" style="flex:1;accent-color:#161514;height:4px;cursor:pointer;">
             <span data-nval style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:#161514;min-width:64px;text-align:right;">3×3</span>
           </div>
           <div style="display:flex;gap:6px;margin-top:11px;">
@@ -298,7 +298,7 @@ class Component extends DCLogic {
       onReplay: () => this.replay(),
       onReset: () => this.resetSolved(),
       onScrambleInput: (e) => { this.scrambleDepth = parseInt(e.target.value, 10); this.q('[data-scramble-val]').textContent = this.scrambleDepth; },
-      onNSlider: (e) => this.setN(parseInt(e.target.value, 10)),
+      onNSlider: (e) => this.setN(this.sliderToN(parseInt(e.target.value, 10))),
       onSpeedClick: (e) => this.setSpeed(e.currentTarget.dataset.speed),
       onSpinToggle: () => { this.autoSpin = !this.autoSpin; this.syncControls(); },
       onCopy: () => this.copyPath(),
@@ -550,7 +550,7 @@ class Component extends DCLogic {
   buildTextureCube(N) {
     const T = window.THREE;
     const total = 2.5;
-    const d = Math.min(N, 50);
+    const d = Math.min(N, 96);
     const solvedIdx = [5, 4, 0, 1, 2, 3]; // px,nx,py,ny,pz,nz -> r,o,w,y,g,b
     this.texFaces = [];
     const mats = [];
@@ -634,7 +634,8 @@ class Component extends DCLogic {
     this.ui.nBadge.textContent = `${this.N}×${this.N}`;
     const pieces = this.N === 1 ? 1 : (6 * this.N * this.N - 12 * this.N + 8);
     this.ui.pieces.textContent = `${pieces.toLocaleString()} pieces`;
-    this.ui.nInfo.textContent = `${this.N}×${this.N}×${this.N} · ${pieces.toLocaleString()} pcs`;
+    const pcsStr = pieces >= 1e9 ? (pieces / 1e9).toFixed(1) + 'B' : pieces >= 1e6 ? (pieces / 1e6).toFixed(1) + 'M' : pieces.toLocaleString();
+    this.ui.nInfo.textContent = `${this.N.toLocaleString()}³ · ${pcsStr} pcs`;
   }
 
   // ---- moves ----
@@ -914,9 +915,13 @@ class Component extends DCLogic {
     if (v === 'studio') setTimeout(() => this.resize(), 30);
     this.syncControls();
   }
+  // Logarithmic size slider: position 0..1000 maps to size 2..100000, so the slider gives
+  // fine control at small (solvable) sizes and still reaches 1000×1000+ smoothly.
+  sliderToN(pos) { return Math.round(2 * Math.pow(50000, pos / 1000)); }
+  nToSlider(n) { return Math.round(1000 * Math.log(n / 2) / Math.log(50000)); }
   setN(n) {
     if (this.busy) return;
-    n = Math.max(2, Math.min(2000, n));
+    n = Math.max(2, Math.min(100000, n));
     if (n === this.n) return;
     this.n = n;
     this.resetSolved();
@@ -941,7 +946,7 @@ class Component extends DCLogic {
       b.style.background = on ? '#161514' : '#F4F3EF';
       b.style.color = on ? '#fff' : '#6E6A61';
     });
-    const nsl = this.q('[data-nslider]'); if (nsl) nsl.value = Math.min(this.n, 50);
+    const nsl = this.q('[data-nslider]'); if (nsl) nsl.value = this.nToSlider(this.n);
     const nv = this.q('[data-nval]'); if (nv) nv.textContent = `${this.n}×${this.n}`;
     // speed
     this.qa('[data-speed]').forEach(b => {
@@ -1699,7 +1704,7 @@ class Component extends DCLogic {
       // Scramble depth: enough to fully mix any cube, without the absurd range
       // that made Solve a guessing game. Cube size can still go big (visual).
       var sd = self.root.querySelector('[data-scramble]'); if (sd){ sd.max = 40; }
-      var ns = self.root.querySelector('[data-nslider]'); if (ns){ ns.max = 2000; }
+      var ns = self.root.querySelector('[data-nslider]'); if (ns){ ns.max = 1000; }
       // The Calm/Lively swarm-speed toggle and the swarm count (16/36/…) selector
       // don't add anything — hide them; the swarm just shows the whole wall.
       self.root.querySelectorAll('[data-sspeed]').forEach(function(b){ var grp=b.parentElement; if(grp) grp.style.display='none'; });

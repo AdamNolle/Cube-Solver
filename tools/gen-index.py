@@ -585,7 +585,7 @@ WIRE = r'''
       // Scramble depth: enough to fully mix any cube, without the absurd range
       // that made Solve a guessing game. Cube size can still go big (visual).
       var sd = self.root.querySelector('[data-scramble]'); if (sd){ sd.max = 40; }
-      var ns = self.root.querySelector('[data-nslider]'); if (ns){ ns.max = 2000; }
+      var ns = self.root.querySelector('[data-nslider]'); if (ns){ ns.max = 1000; }
       // The Calm/Lively swarm-speed toggle and the swarm count (16/36/…) selector
       // don't add anything — hide them; the swarm just shows the whole wall.
       self.root.querySelectorAll('[data-sspeed]').forEach(function(b){ var grp=b.parentElement; if(grp) grp.style.display='none'; });
