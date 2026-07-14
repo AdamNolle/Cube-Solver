@@ -19,6 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -36,8 +41,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Format check
-        run: cargo fmt --all -- --check
+      - name: Format and generated frontend check
+        run: |
+          cargo fmt --all -- --check
+          python tools/gen-index.py --check
+          python tools/frontend-smoke.py
 
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -53,3 +61,24 @@ jobs:
 
       - name: Release build
         run: cargo build --release --workspace
+
+  reduction-release-gate:
+    name: reduction release replay (4x4-11x11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Replay-verified reduction corpus (4x4-8x8)
+        run: >-
+          cargo test --release -p cube_solver --features reduction
+          reduction::finish::tests::full_solve_sizes -- --ignored --exact --nocapture
+      - name: Replay-verified large reduction corpus (9x9-11x11)
+        run: >-
+          cargo test --release -p cube_solver --features reduction
+          reduction::finish::tests::big_sizes -- --ignored --exact --nocapture
+      - name: WASM integration reduction replay (4x4-5x5)
+        run: >-
+          cargo test --release -p cube_wasm --lib
+          tests::reduction_path_solves -- --exact --nocapture

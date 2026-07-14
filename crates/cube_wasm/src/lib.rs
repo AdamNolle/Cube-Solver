@@ -20,6 +20,18 @@ fn color_index(c: Color) -> u8 {
     }
 }
 
+fn color_from_index(index: u8) -> Option<Color> {
+    Some(match index {
+        0 => Color::White,
+        1 => Color::Yellow,
+        2 => Color::Green,
+        3 => Color::Blue,
+        4 => Color::Orange,
+        5 => Color::Red,
+        _ => return None,
+    })
+}
+
 fn axis_index(a: Axis) -> u8 {
     match a {
         Axis::X => 0,
@@ -189,6 +201,35 @@ impl CubeLab {
         sample.min(self.n).max(1)
     }
 
+    /// Replace the model from a complete sticker-state buffer in `Face::ALL`
+    /// order. The solver worker uses this boundary so it receives no scramble
+    /// history to invert—only the same colors visible to the user.
+    pub fn load_face_colors(&mut self, colors: &[u8]) -> bool {
+        if colors.len() != 6 * self.n * self.n {
+            return false;
+        }
+        let Some(stickers) = colors
+            .iter()
+            .copied()
+            .map(color_from_index)
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        let Ok(snapshot) = serde_json::from_value::<cube_core::CubeSnapshot>(
+            serde_json::json!({ "size": self.n, "stickers": stickers }),
+        ) else {
+            return false;
+        };
+        let cube = StickerCube::from_snapshot(snapshot);
+        if cube.validate().is_err() {
+            return false;
+        }
+        self.cube = cube;
+        self.solution.clear();
+        true
+    }
+
     /// Apply one quarter turn in the web UI's `{axis, layer, dir}` convention,
     /// which is identical to `cube_core`'s (axes X/Y/Z = 0/1/2, layer index along
     /// the axis, dir ±1 = right-hand quarter turn). Used to mirror the on-screen
@@ -257,8 +298,32 @@ impl CubeLab {
     /// `solve` falls back to the legacy engine race). Solves a CLONE — `solve_reduction`
     /// mutates its cube to solved — so `self.cube` stays scrambled for the animation.
     fn try_reduction(&mut self) -> Option<String> {
-        let mut work = self.cube.clone();
-        let solution = with_kociemba(|s| cube_solver::reduction::solve_reduction(&mut work, s))?;
+        let original = self.cube.clone();
+        let mut work = original.clone();
+        // Finish before the browser's worker watchdog so timeout can unwind through
+        // reduction loops cleanly; worker termination remains the hard-stop backstop.
+        let internal_limit = if self.n <= 5 {
+            std::time::Duration::from_secs(28)
+        } else if self.n <= 8 {
+            std::time::Duration::from_secs(115)
+        } else {
+            std::time::Duration::from_secs(290)
+        };
+        let control = cube_solver::reduction::ReductionControl::with_timeout(internal_limit);
+        let solution = with_kociemba(|s| {
+            cube_solver::reduction::solve_reduction_with_control(&mut work, s, &control)
+        })
+        .ok()?;
+        if !work.is_solved() {
+            return None;
+        }
+        let mut replay = original;
+        for &mv in &solution {
+            replay.apply_move(mv).ok()?;
+        }
+        if !replay.is_solved() {
+            return None;
+        }
         let size = CubeSize::new(self.n).ok()?;
         let mut moves_json: Vec<serde_json::Value> = Vec::new();
         let mut notation: Vec<String> = Vec::new();
@@ -434,6 +499,8 @@ struct Member {
     flash: u32,
     /// Steps since this trial last improved — used to restart plateaued trials.
     stuck: u32,
+    /// Last accepted learning operator: 0=seed, 1=mutation, 2=crossover, 3=restart.
+    operator: u8,
 }
 
 /// A wall of independent trials all learning to solve the same scramble by
@@ -573,16 +640,55 @@ impl Swarm {
                 mismatch: base_mismatch,
                 flash: 0,
                 stuck: 0,
+                operator: 0,
             });
         }
     }
 
-    /// Restart a trial from the Studio cube (fresh empty sequence).
+    fn random_sequence(&mut self) -> Vec<Move> {
+        let max = self
+            .max_len
+            .min(self.scramble_depth.saturating_add(4))
+            .max(1);
+        let len = 1 + self.rng.below(max);
+        let mut seq = Vec::with_capacity(len);
+        while seq.len() < len {
+            let mv = self.moves[self.rng.below(self.moves.len())];
+            let cancels = seq.last().is_some_and(|prev: &Move| {
+                prev.axis == mv.axis
+                    && prev.layer_start == mv.layer_start
+                    && prev.layer_end == mv.layer_end
+                    && (prev.turns + mv.turns).rem_euclid(4) == 0
+            });
+            if !cancels {
+                seq.push(mv);
+            }
+        }
+        seq
+    }
+
+    /// Restart a plateaued trial in a different part of the search space. Resetting
+    /// every member to the same empty sequence recreates the same local optimum;
+    /// a random legal genome gives mutation/crossover genuinely new material.
     fn restart_member(&mut self, i: usize, base_mismatch: usize) {
-        self.members[i].seq.clear();
-        self.members[i].mismatch = base_mismatch;
-        self.members[i].flash = 0;
+        // Preserve the reliable empty-sequence restart for half the population
+        // while the other half explores a fresh genome. This maintains a stable
+        // baseline and prevents the whole swarm from collapsing to one lineage.
+        let (seq, mismatch) = if i.is_multiple_of(2) {
+            (Vec::new(), base_mismatch)
+        } else {
+            let seq = self.random_sequence();
+            let mismatch = self.eval(&seq);
+            (seq, mismatch)
+        };
+        self.members[i].seq = seq;
+        self.members[i].mismatch = mismatch;
+        self.members[i].flash = u32::from(mismatch == 0) * 26;
         self.members[i].stuck = 0;
+        self.members[i].operator = 3;
+        if mismatch == 0 {
+            self.converged += 1;
+        }
     }
 
     /// Seed the swarm from the Studio's exact scramble (the same `{axis,layer,dir}`
@@ -664,7 +770,7 @@ impl Swarm {
             // single-mutation hill climb, so trials actually reach solved.
             let cur = self.members[i].mismatch;
             let mut best_m = cur;
-            let mut best: Option<Vec<Move>> = None;
+            let mut best: Option<(Vec<Move>, u8)> = None;
             // members[i].seq is immutable across the inner loop (only replaced
             // after it), so clone the base sequence once instead of 8 times.
             let base_seq = self.members[i].seq.clone();
@@ -686,14 +792,15 @@ impl Swarm {
                 let m = self.eval(&candidate);
                 if m < best_m {
                     best_m = m;
-                    best = Some(candidate);
+                    best = Some((candidate, if k < 2 { 2 } else { 1 }));
                 }
             }
             match best {
-                Some(seq) => {
+                Some((seq, operator)) => {
                     self.members[i].seq = seq;
                     self.members[i].mismatch = best_m;
                     self.members[i].stuck = 0;
+                    self.members[i].operator = operator;
                     if best_m == 0 {
                         self.members[i].flash = 26;
                         self.converged += 1;
@@ -720,15 +827,22 @@ impl Swarm {
         self.fill_population(count);
     }
 
-    /// Render buffer: per member, `1 + 54` bytes — `[progress0..100, 54 color
-    /// indices]` for the 6 faces (Up,Down,Front,Back,Left,Right), each 3×3
-    /// row-major.
+    /// Render buffer: per member, 62 bytes — progress, exact mismatch (u16),
+    /// genome length (u16), stagnation, solved-flash, last operator, then 54
+    /// sampled color indices. This lets the Swarm UI visualize how each lineage
+    /// is learning rather than showing only a cosmetic percentage.
     pub fn render(&self) -> Vec<u8> {
+        const STRIDE: usize = 62;
         let total = (6 * self.n * self.n) as f32;
-        let mut out = Vec::with_capacity(self.members.len() * 55);
+        let mut out = Vec::with_capacity(self.members.len() * STRIDE);
         for m in &self.members {
             let pct = (100.0 * (1.0 - m.mismatch as f32 / total)).round() as u8;
             out.push(pct.min(100));
+            out.extend_from_slice(&(m.mismatch.min(u16::MAX as usize) as u16).to_le_bytes());
+            out.extend_from_slice(&(m.seq.len().min(u16::MAX as usize) as u16).to_le_bytes());
+            out.push(m.stuck.min(u8::MAX as u32) as u8);
+            out.push(u8::from(m.flash > 0));
+            out.push(m.operator);
             let mut cube = self.base.clone();
             for mv in &m.seq {
                 let _ = cube.apply_move(*mv);
@@ -736,7 +850,7 @@ impl Swarm {
             for face in Face::ALL {
                 let fs = cube.face_sample(face, 3);
                 // Always emit a fixed 3x3 (9 cells) per face so the JS swarm layout
-                // (55 bytes/member) stays aligned even for 2x2 cubes, where
+                // (62 bytes/member) stays aligned even for 2x2 cubes, where
                 // face_sample returns 2x2. Nearest-neighbour upsample.
                 let d = fs.cells.len().max(1);
                 for r in 0..3 {
@@ -756,7 +870,26 @@ impl Swarm {
 mod tests {
     use super::*;
 
-    /// Exactly what the web UI does: outer-face scramble via `apply_design_move`,
+    #[test]
+    fn sticker_state_boundary_round_trips_without_scramble_history() {
+        let mut source = CubeLab::new(3);
+        source.apply_design_move(0, 2, 1);
+        source.apply_design_move(1, 0, -1);
+        source.apply_design_move(2, 2, 1);
+        let colors = source.face_colors(3);
+
+        let mut worker = CubeLab::new(3);
+        assert!(worker.load_face_colors(&colors));
+        assert_eq!(worker.face_colors(3), colors);
+        assert!(!worker.is_solved());
+
+        let mut invalid = colors.clone();
+        invalid[0] = 9;
+        assert!(!worker.load_face_colors(&invalid));
+        assert!(!worker.load_face_colors(&colors[..colors.len() - 1]));
+    }
+
+    /// Exactly what the web UI does: load only the scrambled sticker state, run a
     /// real solve, then apply the returned `{axis,layer,dir}` moves — must solve.
     #[test]
     fn outer_scramble_is_really_solved() {
@@ -911,7 +1044,26 @@ mod tests {
         assert!(swarm.converged() > 0, "no trials converged");
         // Render buffer has the documented shape.
         let buf = swarm.render();
-        assert_eq!(buf.len(), swarm.member_count() * 55);
+        assert_eq!(buf.len(), swarm.member_count() * 62);
+    }
+
+    #[test]
+    fn swarm_restarts_keep_a_baseline_and_add_genetic_diversity() {
+        let mut swarm = Swarm::new(12, 3, 6, 17);
+        let base_mismatch = swarm.base.mismatch_count();
+        for i in 0..swarm.members.len() {
+            swarm.restart_member(i, base_mismatch);
+        }
+        assert!(swarm.members.iter().step_by(2).all(|m| m.seq.is_empty()));
+        assert!(swarm
+            .members
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .all(|m| !m.seq.is_empty()));
+        for member in &swarm.members {
+            assert_eq!(member.mismatch, swarm.eval(&member.seq));
+        }
     }
 
     #[test]

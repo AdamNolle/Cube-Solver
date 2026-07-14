@@ -13,8 +13,8 @@ use std::thread;
 use std::time::Duration;
 use web_time::Instant;
 
-// Work-in-progress N×N reduction solver — gated off by default so it can't be
-// reached in normal builds. Build/test it explicitly with `--features reduction`.
+// Experimental N×N reduction solver. It is opt-in for direct cube_solver users;
+// the cube_wasm frontend enables the feature for its replay-verified 4×4–11×11 path.
 #[cfg(feature = "reduction")]
 pub mod reduction;
 

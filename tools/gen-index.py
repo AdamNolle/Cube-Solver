@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Regenerates web/index.html: wraps the design component (design-source.txt) with
 # the real Rust/WASM solver wiring. Run from anywhere: `python3 tools/gen-index.py`.
-import json, re, os
+import json, re, os, sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -17,11 +17,6 @@ js = js.replace('} else if (this.autoSpin && !this.activeMove) {', '} else if (t
 body = re.sub(r'ref="\{\{\s*rootRef\s*\}\}"', 'data-dcref="rootRef"', body)
 body = re.sub(r'onClick="\{\{\s*(\w+)\s*\}\}"', r'data-onclick="\1"', body)
 body = re.sub(r'onChange="\{\{\s*(\w+)\s*\}\}"', r'data-onchange="\1"', body)
-# Correct a misleading design caption: sampling is a RENDERING technique, not how
-# the (real) solver works — the solver only handles 2×2/3×3.
-body = body.replace(
-    'Renders any size. Past 11³ the faces are sampled — exactly how the real solver handles giant cubes.',
-    'Renders any size. Past 11³ the cube switches to sampled texture mode for speed. 2×2 through 11×11 are solved for real (3×3 two-phase, 4×4–11×11 reduction); larger sizes are visual.')
 assert '{{' not in body
 
 SHIM = r'''
@@ -40,7 +35,7 @@ WIRE = r'''
     // Engine id -> lane slot. The 3×3 is solved by the two-phase (Kociemba) solver,
     // which reuses the first ('det') lane slot — relabeled "Two-phase" for N=3 by
     // applyEngineLabels(), with the other two lanes hidden (they only run for 2×2).
-    const KEYS = { deterministic:'det', beam:'beam', evolution:'evo', kociemba:'det' };
+    const KEYS = { deterministic:'det', beam:'beam', evolution:'evo', kociemba:'det', reduction:'det' };
     const origScramble = inst.scramble.bind(inst);
     const origSolve = inst.solve.bind(inst);
     const origReset = inst.resetSolved ? inst.resetSolved.bind(inst) : null;
@@ -128,6 +123,17 @@ WIRE = r'''
       } catch(e){} }
     };
 
+    function secureBelow(limit){
+      if (limit <= 1) return 0;
+      if (globalThis.crypto && globalThis.crypto.getRandomValues){
+        var buf = new Uint32Array(1);
+        var ceiling = 0x100000000 - (0x100000000 % limit);
+        do { globalThis.crypto.getRandomValues(buf); } while (buf[0] >= ceiling);
+        return buf[0] % limit;
+      }
+      return Math.floor(Math.random() * limit); // legacy webview fallback
+    }
+
     inst.scramble = function(){
       if (this.busy) return;
       if (this.mode !== 'cubie') return origScramble();   // huge (texture) cubes: design path
@@ -144,11 +150,13 @@ WIRE = r'''
       this.lastScramble = [];
       let prev = -1;
       for (let i=0;i<depth;i++){
-        let axis;
-        do { axis = (Math.random()*3)|0; } while (axis===prev && Math.random()<0.55);
+        // Adjacent turns never share an axis, avoiding trivial cancellations and
+        // making every generated challenge a stronger, independently random state.
+        let axis = prev < 0 ? secureBelow(3) : secureBelow(2);
+        if (prev >= 0 && axis >= prev) axis++;
         prev = axis;
-        const layer = (N <= 3) ? (Math.random()<0.5 ? 0 : N-1) : (Math.random()*N)|0;
-        const dir = Math.random()<0.5 ? 1 : -1;
+        const layer = (N <= 3) ? (secureBelow(2) ? N-1 : 0) : secureBelow(N);
+        const dir = secureBelow(2) ? 1 : -1;
         this.lastScramble.push({axis, layer, dir});
       }
       // Apply the whole scramble instantly — fast at any depth, no stuck queue.
@@ -243,81 +251,133 @@ WIRE = r'''
         if (this.syncControls) this.syncControls();
         return;
       }
-      // Real solve (2×2/3×3). _solvePending (not busy) blocks re-entry without
-      // letting the rAF loop finish early on the empty queue.
+      // Real solve for every supported size. _solvePending (not busy) blocks
+      // re-entry without letting the animation loop finish an empty queue.
       this._visualSolve = false;
       this._solvePending = true;
-      // Watchdog: if a solve stalls (a slow or hung worker on a hard deep
-      // scramble), recover the UI instead of sticking on 'Solving…' forever.
+      this._solveDispatch = null;
+      this._solveJobId = (this._solveJobId || 0) + 1;
+      var solveJobId = this._solveJobId;
+      // Reduction grows quickly with N. Keep a watchdog, but size it from measured
+      // release behavior so a valid 9×9–11×11 solve is not killed at eight seconds.
       var _sw = this;
+      var watchdogMs = this.n <= 3 ? 8000 : this.n <= 5 ? 30000 : this.n <= 8 ? 120000 : 300000;
       clearTimeout(this._solveWatchdog);
       this._solveWatchdog = setTimeout(function(){
-        if (!_sw._solvePending) return;
+        if (!_sw._solvePending || _sw._solveJobId !== solveJobId) return;
         abortPendingSolve(_sw);
-        if (_sw.ui && _sw.ui.status) _sw.ui.status.textContent = 'No verified solution within budget — try a lower scramble depth';
+        if (_sw.ui && _sw.ui.status) _sw.ui.status.textContent = 'Solve timed out — try a smaller cube or shallower scramble';
         if (_sw.syncControls) _sw.syncControls();
-      }, 8000);
+      }, watchdogMs);
       if (this.ui && this.ui.status) this.ui.status.textContent = 'Solving…';
       if (this.startLanes) this.startLanes();
       if (this.syncControls) this.syncControls();
-      ensureWorker(this);
-      if (this._workerReady && this._worker){
-        // Off the main thread → UI stays responsive and the solve is cancellable.
-        showCancel(this, true);
-        this._worker.postMessage({ type:'solve', n: this.n, depth: this.scrambleDepth||6, time: 6000, moves: this.lastScramble });
+      var worker = ensureWorker(this);
+      if (this._workerReady && worker){
+        postWorkerSolve(this);
+      } else if (!worker) {
+        handleWorkerFailure(this);
       } else {
-        // Fallback: bounded main-thread solve (~1.5s worst case, never the old 5s).
-        var self = this;
-        setTimeout(function(){
-          var r; try { r = self.lab.solve(Math.min(self.scrambleDepth||6, 9), 1500); } catch(e){ r = '{"found":false}'; }
-          onSolveResult(self, { type:'result', ok:true, result:r });
-        }, 30);
+        showCancel(this, true);
+        if (this.ui && this.ui.status) this.ui.status.textContent = 'Loading solver worker…';
+        clearTimeout(this._workerLoadTimer);
+        this._workerLoadTimer = setTimeout(function(){
+          if (!_sw._solvePending || _sw._workerReady) return;
+          if (_sw.n <= 3) runSmallFallback(_sw);
+          else handleWorkerFailure(_sw);
+        }, 1500);
       }
     };
 
     // ---- Web Worker solve plumbing (responsive + cancellable) ----
+    function postWorkerSolve(self){
+      if (!self._solvePending || self._solveDispatch || !self._workerReady || !self._worker) return;
+      self._solveDispatch = 'worker';
+      clearTimeout(self._workerLoadTimer);
+      showCancel(self, true);
+      // Send only the visible sticker state. The worker never receives the
+      // scramble sequence, so its verified path cannot be a hidden inverse.
+      var colors = self.lab.face_colors(self.n);
+      self._worker.postMessage({ type:'solve', jobId:self._solveJobId, n:self.n, depth:self.scrambleDepth||6, time:6000, colors:colors });
+    }
+
+    function runSmallFallback(self){
+      if (!self._solvePending || self._solveDispatch) return;
+      self._solveDispatch = 'fallback';
+      clearTimeout(self._workerLoadTimer);
+      var jobId = self._solveJobId;
+      self._fallbackTimer = setTimeout(function(){
+        self._fallbackTimer = null;
+        if (!self._solvePending || self._solveJobId !== jobId) return;
+        var r; try { r = self.lab.solve(Math.min(self.scrambleDepth||6, 9), 1500); } catch(e){ r = '{"found":false}'; }
+        onSolveResult(self, { type:'result', jobId:jobId, ok:true, result:r });
+      }, 0);
+    }
+
+    function handleWorkerFailure(self){
+      clearTimeout(self._workerLoadTimer);
+      self._workerReady = false;
+      self._workerBroken = true;
+      if (self._worker){ try { self._worker.terminate(); } catch(e){} }
+      self._worker = null;
+      if (!self._solvePending) return;
+      self._solveDispatch = null;
+      if (self.n <= 3){ runSmallFallback(self); return; }
+      clearTimeout(self._solveWatchdog);
+      self._solvePending = false;
+      self._solveDispatch = null;
+      showCancel(self, false);
+      if (self.ui && self.ui.status) self.ui.status.textContent = 'Solver worker unavailable — reduction was not run on the UI thread';
+      if (self.syncControls) self.syncControls();
+    }
+
     function ensureWorker(self){
-      if (self._workerBroken) return null;   // a worker failed here before → use the main thread
+      if (self._workerBroken) return null;
       if (self._worker) return self._worker;
       try {
-        var w = new Worker('./solver-worker.js', { type: 'module' });
+        var w = new Worker('./solver-worker.js', { type:'module' });
         w.onmessage = function(e){
+          if (self._worker !== w) return;
           var d = e.data || {};
-          if (d.type === 'ready'){ self._workerReady = true; return; }
-          if (d.type === 'error'){ self._workerReady = false; self._workerBroken = true; return; }
-          if (d.type === 'result'){ onSolveResult(self, d); return; }
-        };
-        w.onerror = function(){
-          // Worker failed to load/run (common in some webviews). Give up on workers
-          // entirely — do NOT recreate (that loops forever) — and fall back to the
-          // bounded main-thread solve. Recover any in-flight solve immediately.
-          self._workerReady = false; self._workerBroken = true;
-          if (self._worker){ try { self._worker.terminate(); } catch(e){} }
-          self._worker = null;
-          if (self._solvePending){
-            var r; try { r = self.lab.solve(Math.min(self.scrambleDepth||6, 9), 1500); } catch(e){ r = '{"found":false}'; }
-            onSolveResult(self, { type:'result', ok:true, result:r });
+          if (d.type === 'ready'){
+            self._workerReady = true;
+            postWorkerSolve(self);
+            return;
           }
+          if (d.type === 'error'){ handleWorkerFailure(self); return; }
+          if (d.type === 'result'){ onSolveResult(self, d); }
         };
+        w.onerror = function(){ if (self._worker === w) handleWorkerFailure(self); };
         self._worker = w;
-      } catch(e){ self._workerBroken = true; self._worker = null; self._workerReady = false; }
+      } catch(e){
+        self._worker = null;
+        handleWorkerFailure(self);
+      }
       return self._worker;
     }
-    // Stop an in-flight worker solve without touching status (guard before
-    // scramble/reset/N/replay). Returns true if a solve was aborted.
+    // Stop an in-flight worker solve or a not-yet-started fallback. Returns true
+    // when an operation was pending; a synchronous fallback already executing
+    // cannot receive events until it returns, but duplicate dispatch is prevented.
     function abortPendingSolve(self){
       if (!self._solvePending) return false;
       clearTimeout(self._solveWatchdog);
+      clearTimeout(self._workerLoadTimer);
+      clearTimeout(self._fallbackTimer);
       self._solvePending = false;
+      self._solveDispatch = null;
+      self._solveJobId = (self._solveJobId || 0) + 1;
       if (self._worker){ try { self._worker.terminate(); } catch(e){} self._worker = null; self._workerReady = false; }
       showCancel(self, false);
       ensureWorker(self);
       return true;
     }
     function onSolveResult(self, data){
-      if (!self._solvePending) return;   // cancelled or stale
+      if (!self._solvePending || !data || data.jobId !== self._solveJobId) return;
       clearTimeout(self._solveWatchdog);
+      clearTimeout(self._workerLoadTimer);
+      clearTimeout(self._fallbackTimer);
       self._solvePending = false;
+      self._solveDispatch = null;
       showCancel(self, false);
       var res = null;
       if (data && data.ok){ try { res = JSON.parse(data.result); } catch(e){} }
@@ -373,10 +433,8 @@ WIRE = r'''
       if (self.ui && self.ui.status) self.ui.status.textContent = 'Solve cancelled — scramble or solve again';
       if (self.syncControls) self.syncControls();
     }
-    // Solve is greyed/disabled for the whole solve (search + replay). When NOT
-    // solving we leave the button to the design's syncControls (it greys Solve
-    // when the cube is already solved / unscrambled). Cancel always stays on
-    // screen and active (a no-op when there's nothing to cancel).
+    // Solve is disabled for the whole solve (search + replay). Cancel is only
+    // exposed while there is an operation it can actually stop.
     function updateSolveButtons(self){
       var solving = !!self._solvePending || (self.busy && self.phase === 'solving');
       var solveBtn = self.root.querySelector('[data-onclick="onSolve"]');
@@ -384,12 +442,21 @@ WIRE = r'''
       // clickable even on a solved/fresh cube (it scrambles first), so it never
       // silently does nothing. This overrides the design's 'grey when unscrambled'.
       if (solveBtn){
+        solveBtn.disabled = solving;
+        solveBtn.setAttribute('aria-disabled', String(solving));
         solveBtn.style.opacity = solving ? '0.45' : '1';
         solveBtn.style.pointerEvents = solving ? 'none' : 'auto';
         solveBtn.style.cursor = solving ? 'default' : 'pointer';
       }
       var cb = self.root.querySelector('[data-cancel-solve]');
-      if (cb){ cb.disabled = false; cb.style.opacity = '1'; cb.style.pointerEvents = 'auto'; cb.style.cursor = 'pointer'; }
+      if (cb){
+        cb.disabled = !solving;
+        cb.setAttribute('aria-disabled', String(!solving));
+        cb.style.display = solving ? 'block' : 'none';
+        cb.style.opacity = solving ? '1' : '0';
+        cb.style.pointerEvents = solving ? 'auto' : 'none';
+        cb.style.cursor = solving ? 'pointer' : 'default';
+      }
     }
     // Kept for existing call sites — state is derived from _solvePending/busy.
     function showCancel(self){ updateSolveButtons(self); }
@@ -398,8 +465,16 @@ WIRE = r'''
       var origSyncC = inst.syncControls.bind(inst);
       inst.syncControls = function(){ origSyncC(); updateSolveButtons(this); };
     }
+    var origUnmount = inst.componentWillUnmount ? inst.componentWillUnmount.bind(inst) : null;
+    inst.componentWillUnmount = function(){
+      clearTimeout(this._solveWatchdog);
+      clearTimeout(this._workerLoadTimer);
+      clearTimeout(this._fallbackTimer);
+      if (this._worker){ try { this._worker.terminate(); } catch(e){} this._worker=null; }
+      if (origUnmount) origUnmount();
+    };
     ensureWorker(inst);   // warm up the solver worker so it's ready before the first solve
-    updateSolveButtons(inst);   // initial state: Solve enabled, Cancel greyed
+    updateSolveButtons(inst);   // initial state: Solve enabled, Cancel hidden
 
     // During a visual-only solve there's no real search — don't animate the
     // fabricated node/generation telemetry the design shows per frame.
@@ -436,7 +511,7 @@ WIRE = r'''
         if ((self.n||3) > SWARM_MAX){ self.swarmLab = null; self._swarmKey = swarmKey(self); return; }
         var cnt = (self.cards||[]).length||16;
         var ls = self.lastScramble || [];
-        self.swarmLab = new Swarm(cnt, self.n||3, Math.max(3, self.scrambleDepth||6), BigInt((Math.random()*1e9)|0)+1n);
+        self.swarmLab = new Swarm(cnt, self.n||3, Math.max(3, self.scrambleDepth||6), BigInt(secureBelow(0x100000000))+1n);
         // Always seed the swarm from the EXACT Studio cube. Empty scramble (a
         // solved Studio) → solved base, so the wall mirrors the on-screen cube.
         self.swarmLab.set_scramble(
@@ -488,32 +563,39 @@ WIRE = r'''
         var g = this.swarmSpeed || 1;
         this._swAccum = (this._swAccum||0) + dt * g * 100;
         var steps=0; while (this._swAccum >= 1 && steps < 24){ this.swarmLab.step(); this._swAccum -= 1; steps++; }
-        // Spin every frame (cheap); only re-read the WASM buffer and repaint the
-        // 54 stickers when the population actually advanced (or on first paint).
+        // Spin every frame (cheap); only re-read the WASM population metadata and
+        // 54 sampled stickers when evolution advanced (or on first paint).
         var repaint = steps > 0 || !this._swPainted;
         var buf = repaint ? this.swarmLab.render() : null;
         var N = Math.min(this.cards.length, this.swarmLab.member_count());
         for (var i=0;i<N;i++){
           var c = this.cards[i];
-          c.rot += dt * c.spin; if (c.inner) c.inner.style.transform = 'rotateX(-20deg) rotateY('+c.rot+'deg)';
+          if (!this.reducedMotion){
+            c.rot += dt * c.spin;
+            if (c.inner) c.inner.style.transform = 'rotateX(-20deg) rotateY('+c.rot+'deg)';
+          }
           if (!repaint) continue;
-          var b = i*55, pct = buf[b];
+          var b = i*62, pct = buf[b];
+          var mismatch = buf[b+1] | (buf[b+2] << 8);
+          var genes = buf[b+3] | (buf[b+4] << 8);
+          var stuck = buf[b+5];
+          var op = ['seed','mutation','crossover','restart'][buf[b+7]] || 'search';
           // per-cell colour cache; reset if the design rebuilt this card's cells
           if (!c.last || c._lastCells !== c.cells){ c.last = new Int8Array(54).fill(-1); c._lastCells = c.cells; }
           for (var k=0;k<54;k++){
             var cf=(k/9)|0, cell=k%9, wf=FACE_FOR_CARD[cf];
-            var ci = buf[b + 1 + wf*9 + cell];
+            var ci = buf[b + 8 + wf*9 + cell];
             // only touch the DOM when a sticker's colour actually changes
             if (c.cells[k] && c.last[k] !== ci){ c.cells[k].style.background = SWPAL[ci] || SWPAL[0]; c.last[k] = ci; }
           }
           c.cring.style.strokeDashoffset = c.circ * (1 - pct/100);
           if (pct >= 100){
             c.cring.style.stroke = '#00A24B'; c.check.style.display='flex';
-            c.cnt.textContent='solved'; c.cnt.style.color='#1BA64B';
+            c.cnt.textContent='solved · '+op; c.cnt.style.color='#1BA64B';
             c.card.style.borderColor='#CDEAD4'; c.card.style.boxShadow='0 4px 16px -6px rgba(27,166,75,.4)';
           } else {
             c.cring.style.stroke = this.accent; c.check.style.display='none';
-            c.cnt.textContent = Math.round(54*(1-pct/100)) + ' off'; c.cnt.style.color='#C7C3BA';
+            c.cnt.textContent = mismatch + ' off · ' + genes + ' genes · ' + (stuck ? 'plateau '+stuck : op); c.cnt.style.color='#8C887F';
             c.card.style.borderColor='#ECEAE4'; c.card.style.boxShadow='0 1px 2px rgba(20,20,18,.03)';
           }
         }
@@ -532,7 +614,8 @@ WIRE = r'''
       var cmp = (solutionLen < scrambleLen)
         ? ('<b>'+solutionLen+' moves</b> — shorter than the '+scrambleLen+'-move scramble, so it cannot be replaying it.')
         : ('<b>'+solutionLen+' moves</b> from the state alone — a fresh, verified path, not the scramble inverse.');
-      body.innerHTML = 'The '+scrambleLen+'-move scramble was applied, then discarded. The solver was given only the cube state (54 sticker colours) and searched for its own path: '+cmp;
+      var stickerCount = 6 * self.n * self.n;
+      body.innerHTML = 'The scramble move history was withheld from the worker. It received only the cube state ('+stickerCount+' sticker colours) and searched for its own verified path: '+cmp;
       p.style.display='block';
     }
 
@@ -544,15 +627,7 @@ WIRE = r'''
         p.innerHTML = '<div style="display:flex;align-items:center;gap:7px;font-size:10px;font-weight:600;letter-spacing:.07em;color:#4E8A4A;margin-bottom:6px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>SCRAMBLE HIDDEN FROM SOLVER</div><div data-proof-body style="font-size:12px;color:#5b5f54;line-height:1.5;"></div>';
         chips.parentNode.insertBefore(p, chips);
       }
-      self.root.querySelectorAll('span').forEach(function(s){
-        if (s.textContent && s.textContent.trim()==='3 strategies, in parallel'){
-          s.textContent = '3 strategies on the cube state — none see the scramble';
-          s.setAttribute('data-race-sub','');
-        }
-        if (s.textContent && s.textContent.trim()==='SOLVER RACE'){
-          s.setAttribute('data-race-head','');
-        }
-      });
+
       var DESC = { det:'Searches forward from the scrambled state and backward from solved until the paths meet — exact & shortest.',
                    beam:'Keeps the handful of partial solutions closest to solved at each step.',
                    evo:'Evolves a population of move sequences — fittest survive, recombine, and mutate.' };
@@ -602,7 +677,8 @@ WIRE = r'''
     //   • 2×2 — three real engines race (meet-in-the-middle, beam, island genetic);
     //   • 3×3 — the two-phase (Kociemba) solver, shown as one near-optimal lane with
     //           the other two hidden (they don't run for the 3×3);
-    //   • N>3 — no real search (visual playback), labels restored.
+    //   • 4×4–11×11 — one reduction lane (centers → edges → 3×3 + parity);
+    //   • N>11 — visual playback, honestly labeled as unsearched.
     function laneLabelEl(el){ return (el && el.firstElementChild) ? el.firstElementChild.children[1] : null; }
     function applyEngineLabels(self){
       var n = self.n || 3;
@@ -616,23 +692,31 @@ WIRE = r'''
         });
       }
       var twoPhase = (n === 3);
-      // Hide the two non-running lanes on the 3×3; show all three otherwise.
+      var reduction = (n >= 4 && n <= SOLVE_MAX_N);
+      var singleEngine = twoPhase || reduction;
+      // Hide non-running lanes whenever a dedicated complete solver owns the size.
       ['beam','evo'].forEach(function(k){
-        var el = self.root.querySelector('[data-lane="'+k+'"]'); if (el) el.style.display = twoPhase ? 'none' : '';
+        var el = self.root.querySelector('[data-lane="'+k+'"]'); if (el) el.style.display = singleEngine ? 'none' : '';
       });
       var detEl = self.root.querySelector('[data-lane="det"]');
       var detLab = laneLabelEl(detEl);
       var detDesc = detEl && detEl.querySelector('[data-lane-desc]');
-      if (detLab) detLab.textContent = twoPhase ? 'Two-phase (Kociemba)' : (self._origLane.det.label || 'Meet-in-the-middle');
+      if (detLab) detLab.textContent = twoPhase
+        ? 'Two-phase (Kociemba)'
+        : reduction ? 'N×N reduction' : (self._origLane.det.label || 'Meet-in-the-middle');
       if (detDesc) detDesc.textContent = twoPhase
         ? 'Orients corners and edges into the UD-slice subgroup, then solves the permutation within it — a near-optimal solution for any 3×3 scramble.'
-        : 'Searches forward from the scrambled state and backward from solved until the paths meet — exact & shortest.';
+        : reduction
+          ? 'Solves centers, pairs wing orbits, resolves parity, then finishes the reduced 3×3; every returned path is replay-verified.'
+          : 'Searches forward from the scrambled state and backward from solved until the paths meet — exact & shortest.';
       var head = self.root.querySelector('[data-race-head]');
       var sub = self.root.querySelector('[data-race-sub]');
-      if (head) head.textContent = twoPhase ? 'BEST-PATH SOLVER' : 'SOLVER RACE';
+      if (head) head.textContent = twoPhase ? 'BEST-PATH SOLVER' : reduction ? 'REDUCTION SOLVER' : 'SOLVER RACE';
       if (sub) sub.textContent = twoPhase
         ? 'two-phase solver — near-optimal, never the scramble inverse'
-        : '3 strategies on the cube state — none see the scramble';
+        : reduction
+          ? 'centers → wing pairing → reduced 3×3 + parity'
+          : '3 strategies on the cube state — none see the scramble';
       // Clear any stale per-lane result (e.g. when switching N) so a previous
       // solve's "verified · N moves ★" doesn't linger. Never touch lanes mid-solve.
       if (!self.busy){
@@ -667,7 +751,7 @@ WIRE = r'''
       if (n > SOLVE_MAX_N){
         ban.style.cssText = ban._base + 'background:#FBF4E8;color:#9A6A1E;border-color:#F0E0C2;';
         ban.innerHTML = '<b>'+n+'×'+n+' is visual.</b> 2×2 through '+SOLVE_MAX_N+'×'+SOLVE_MAX_N+' are solved for real; bigger cubes scramble fully and Solve plays back a visual demo.';
-      } else if (d > SOLVE_MAX_DEPTH){
+      } else if (n === 2 && d > SOLVE_MAX_DEPTH){
         ban.style.cssText = ban._base + 'background:#FBF4E8;color:#9A6A1E;border-color:#F0E0C2;';
         ban.innerHTML = '<b>Deep scramble (depth '+d+').</b> The exact solver may run out of budget. Keep depth ≤ '+SOLVE_MAX_DEPTH+' for a guaranteed solve.';
       } else {
@@ -701,14 +785,7 @@ WIRE = r'''
     })(inst);
   }
 
-  function markLive(){
-    // Remove the corner status pill entirely (the design's "Simulated demo" badge).
-    document.querySelectorAll('span').forEach(s=>{
-      if (s.textContent && s.textContent.trim() === 'Simulated demo'){
-        s.style.display = 'none';
-      }
-    });
-  }
+  function markLive(){}
 '''
 
 BOOT = r'''
@@ -756,7 +833,9 @@ BOOT = r'''
       wireRealSolver(inst);
       markLive();
     } catch (e){
-      console.warn('WASM failed to load — running the simulated demo.', e);
+      console.warn('WASM failed to load — solver unavailable; visualization only.', e);
+      const status = inst.ui && inst.ui.status;
+      if (status) status.textContent = 'Solver failed to load — visualization only';
     }
   }
   boot();
@@ -771,5 +850,12 @@ html = ('<!DOCTYPE html>\n<html lang="en">\n<head>\n'
         + SHIM + '\n' + js + '\n' + WIRE + '\n' + BOOT + '\n</script>\n</body>\n</html>\n')
 
 out = os.path.join(_ROOT, 'web', 'index.html')
-open(out,'w').write(html)
-print("wrote", out, len(html), "bytes")
+if '--check' in sys.argv:
+    current = open(out, encoding='utf-8').read() if os.path.exists(out) else None
+    if current != html:
+        print(f"stale generated frontend: run python3 tools/gen-index.py", file=sys.stderr)
+        raise SystemExit(1)
+    print("frontend is current:", out)
+else:
+    open(out, 'w', encoding='utf-8').write(html)
+    print("wrote", out, len(html), "bytes")

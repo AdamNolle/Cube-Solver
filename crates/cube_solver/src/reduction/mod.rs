@@ -11,13 +11,13 @@
 //! disturbing already-finalized work. The full solve is checked by replay
 //! (`StickerCube::is_solved`).
 //!
-//! STATUS: **every size 4×4 through 10×10 solves end-to-end, reliably and fast**, and the
-//! method generalises to any N. Asserted over many random wide scrambles in
-//! `finish::tests::{full_solve_sizes, stress_reliability}` (the latter replays the returned
-//! move list to solved). Per-solve is fast (≈0.17 s at 4×4 … ≈3.4 s at 7×7), plus a
-//! one-time per-size library build (≈5–6 s at 9×9/10×10, cheap below). Still feature-gated
-//! (`--features reduction`) and not yet wired into `cube_wasm`/the app — the 3×3 two-phase
-//! (Kociemba) solver remains the shipped engine; wiring N>3 in is the next integration step.
+//! STATUS: the advertised 4×4–11×11 range passes the release-mode replay corpus and CI.
+//! `cube_wasm` enables reduction and routes only that measured range through this pipeline.
+//! Cooperative deadlines and commit-on-success cancellation are implemented, with full
+//! legal-move replay corpora measured through research-only N=44. Isolated noncanonical
+//! orbit transport also replays at N=66/N=132 with lazy orbit-local edge libraries. Larger-N
+//! reliability and resource economics remain active research, so these results do not expand
+//! the product ceiling.
 //!
 //! How each stage works:
 //!   * Centres — `centers_det::solve_centers`: deterministic, exact centre-cell permutation
@@ -29,12 +29,12 @@
 //!   * 3×3 finish — `finish::finish_3x3`: extract a 3×3 from the reduced cube, solve with
 //!     the two-phase engine, replay as outer turns; an `is_solvable` guard means the search
 //!     never hangs on an impossible (parity) state.
-//!   * Parity — `finish::solve_reduction`: even cubes carry OLL/PLL parity and the wings
-//!     split into ⌊(n-2)/2⌋ orbits with independent parities. Handled by driving edges to
-//!     all-home, a deterministic dedge swap for odd corners, and a *bitmask* over orbit-
-//!     flipper subsets (slices on even cubes, wides on odd) that lands on the odd-orbit set
-//!     in one shot; a centre-stall recovery and cumulative/non-cumulative disturbance walks
-//!     are the fallbacks. The returned move list is `simplify`-ed.
+//!   * Parity — `finish::solve_reduction`: paired wings are normalized per physical orbit
+//!     to one of two exact sticker-visible forms (`E_d` home or canonical `D_d` defect).
+//!     A depth-parameterized, machine-verified orbit-local template maps `D_d` to `E_d`;
+//!     bounded search failure remains a coverage error, not a parity certificate. Legacy
+//!     center-stall/disturbance recovery remains only as a bounded fallback. The returned
+//!     move list is `simplify`-ed and replay-verified at the WASM boundary.
 //!
 //! Known non-goals: solutions are long (one commutator per piece + re-reductions); a much
 //! shorter solver would be a major rewrite (batch placements / explicit parity algs).
@@ -57,6 +57,84 @@ mod edges_det;
 mod finish;
 
 use cube_core::{Axis, CubeState, Face, Move, StickerCube};
+use std::cell::RefCell;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
+use web_time::Instant;
+
+/// Cooperative operational control for long reduction solves. Worker termination
+/// remains the browser's hard-stop backstop; this control lets native callers and
+/// internal loops stop before starting more expensive work.
+#[derive(Clone, Debug)]
+pub struct ReductionControl {
+    deadline: Option<Instant>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ReductionControl {
+    pub fn unlimited() -> Self {
+        Self {
+            deadline: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            deadline: Some(Instant::now() + timeout),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    pub fn should_continue(&self) -> bool {
+        !self.cancelled.load(Ordering::Relaxed)
+            && self
+                .deadline
+                .is_none_or(|deadline| Instant::now() < deadline)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReductionError {
+    CancelledOrTimedOut,
+    Unsolved,
+}
+
+thread_local! {
+    static ACTIVE_CONTROL: RefCell<Option<ReductionControl>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn reduction_checkpoint() -> bool {
+    ACTIVE_CONTROL.with(|active| {
+        active
+            .borrow()
+            .as_ref()
+            .is_none_or(ReductionControl::should_continue)
+    })
+}
+
+struct ControlGuard(Option<ReductionControl>);
+
+impl Drop for ControlGuard {
+    fn drop(&mut self) {
+        ACTIVE_CONTROL.with(|active| {
+            active.replace(self.0.take());
+        });
+    }
+}
+
+pub(crate) fn with_reduction_control<T>(control: &ReductionControl, run: impl FnOnce() -> T) -> T {
+    let previous = ACTIVE_CONTROL.with(|active| active.replace(Some(control.clone())));
+    let _guard = ControlGuard(previous);
+    run()
+}
 
 // The deterministic centre solver is the real one; the old greedy `centers` module
 // is kept only for `orient_fixed_centers`/`cube_rotations` that `centers_det` reuses.
@@ -65,7 +143,7 @@ pub use edges::edges_paired;
 // The deterministic edge solver (perm-tracking, like `centers_det`) is the real one;
 // the greedy `edges::solve_edges` is kept behind `--features reduction` as a fallback.
 pub use edges_det::solve_edges;
-pub use finish::{finish_3x3, solve_reduction};
+pub use finish::{finish_3x3, solve_reduction, solve_reduction_with_control};
 
 /// The single inner layer `depth` layers in from `face` (depth 0 = the outer
 /// face layer). Sign matches `Move::wide`, so `slice_from(f, n, 0, t) ==

@@ -10,7 +10,7 @@
 //! or two swapped edges) — OLL/PLL parity. That is detected and handled separately;
 //! this module is the parity-free finish.
 
-use crate::kociemba::cube3::{solve_sticker, sticker_to_cubie};
+use crate::kociemba::cube3::{solve_sticker, sticker_to_cubie_unchecked};
 use crate::kociemba::search::Solver;
 use crate::kociemba::CubieCube;
 use cube_core::{Color, CubeSize, CubeState, Face, Move, StickerCube};
@@ -92,6 +92,149 @@ fn perm_parity(p: &[u8]) -> bool {
     odd
 }
 
+fn wing_orbit_depth(slot: usize, n: usize) -> Option<usize> {
+    let wings_per_edge = n.checked_sub(2)?;
+    if wings_per_edge == 0 {
+        return None;
+    }
+    let wing = slot % wings_per_edge + 1;
+    if wing * 2 == n - 1 {
+        return None; // fixed middle edge on odd cubes, not a paired-wing orbit
+    }
+    let depth = wing.min(n - 1 - wing);
+    (depth > 0).then_some(depth)
+}
+
+/// RCube-style depth-parameterized visible wing-defect toggle translated into
+/// cube_core's turn convention. The normalizer applies its inverse only after
+/// reaching the exact canonical staged defect. Tests below verify its orbit-local
+/// support independently of scramble history.
+fn orbit_parity_template(n: usize, depth: usize) -> Option<Vec<Move>> {
+    let orbit_count = (n.checked_sub(2)?) / 2;
+    if depth == 0 || depth > orbit_count {
+        return None;
+    }
+    let size = CubeSize::new(n).ok()?;
+    // RCube's q is face-clockwise. cube_core's face-like positive quarter uses
+    // the inverse convention, so indexed U/D slice quarters are negated.
+    let d = |turns: i8| super::slice_from(Face::Down, n, depth, -turns);
+    let u = |turns: i8| super::slice_from(Face::Up, n, depth, -turns);
+    let face = |f, turns| Move::face(f, size, turns);
+    Some(vec![
+        d(-1),
+        face(Face::Right, 2),
+        u(1),
+        face(Face::Front, 2),
+        u(-1),
+        face(Face::Front, 2),
+        d(2),
+        face(Face::Right, 2),
+        d(1),
+        face(Face::Right, 2),
+        d(-1),
+        face(Face::Right, 2),
+        face(Face::Front, 2),
+        d(2),
+        face(Face::Front, 2),
+    ])
+}
+
+/// The depth-local template has the same edge-major 24-pair visible signature
+/// at every N/depth (machine-checked below), so build it once on a 4×4 instead
+/// of constructing and turning an O(N²) reference cube for every orbit.
+fn canonical_defect_pairs() -> &'static [(Color, Color)] {
+    static PAIRS: std::sync::OnceLock<Vec<(Color, Color)>> = std::sync::OnceLock::new();
+    PAIRS.get_or_init(|| {
+        let mut defect = StickerCube::solved(CubeSize::new(4).unwrap());
+        for mv in orbit_parity_template(4, 1).unwrap() {
+            defect.apply_move(mv).unwrap();
+        }
+        super::edges_det::orbit_pairs(&defect, 1)
+    })
+}
+
+/// Put each paired 24-wing orbit into one of two sticker-visible normal forms:
+/// all-home (`E_d`) or the exact local defect produced by `orbit_parity_template`
+/// (`D_d`). A bounded coverage failure is kept distinct from parity. When `D_d`
+/// is reached, the verified inverse template maps it to `E_d` without touching
+/// centers, corners, the odd-cube midge, or any other wing orbit.
+fn normalize_and_correct_wing_orbits(cube: &mut StickerCube) -> Option<Vec<Move>> {
+    use super::centers_solved;
+    use super::edges_det::{home_orbit_pairs, orbit_matches_pairs, solve_orbit_to_pairs};
+
+    let n = cube.size().get();
+    if n <= 3 {
+        return Some(Vec::new());
+    }
+    if !centers_solved(cube) {
+        return None;
+    }
+    let home = home_orbit_pairs(n);
+    let defect = canonical_defect_pairs();
+    let mut moves = Vec::new();
+    for depth in 1..=(n - 2) / 2 {
+        if !super::reduction_checkpoint() {
+            return None;
+        }
+        if orbit_matches_pairs(cube, depth, &home) {
+            continue;
+        }
+        let template = orbit_parity_template(n, depth)?;
+
+        // Exact canonical forms need no search. Each comparison reads 24 slots,
+        // making classification O(N) across all paired wing orbits.
+        if orbit_matches_pairs(cube, depth, defect) {
+            for mv in template.iter().rev() {
+                let inverse = mv.inverse();
+                cube.apply_move(inverse).ok()?;
+                moves.push(inverse);
+            }
+            if !orbit_matches_pairs(cube, depth, &home) {
+                return None;
+            }
+            continue;
+        }
+
+        let mut even_trial = cube.clone();
+        let even = solve_orbit_to_pairs(&mut even_trial, depth, &home);
+        if std::env::var("RDBG").is_ok() {
+            eprintln!(
+                "[red] orbit normalizer depth {depth}: E stall {:?}",
+                even.stalled_slot
+            );
+        }
+        if even.stalled_slot.is_none() {
+            *cube = even_trial;
+            moves.extend(even.moves);
+            continue;
+        }
+
+        let mut defect_trial = cube.clone();
+        let defect_outcome = solve_orbit_to_pairs(&mut defect_trial, depth, defect);
+        if std::env::var("RDBG").is_ok() {
+            eprintln!(
+                "[red] orbit normalizer depth {depth}: D stall {:?}",
+                defect_outcome.stalled_slot
+            );
+        }
+        if defect_outcome.stalled_slot.is_some() {
+            return None;
+        }
+        moves.extend(defect_outcome.moves);
+        for mv in template.iter().rev() {
+            let inverse = mv.inverse();
+            defect_trial.apply_move(inverse).ok()?;
+            moves.push(inverse);
+        }
+        // Recompute the visible form rather than trusting the defect bookkeeping.
+        if !orbit_matches_pairs(&defect_trial, depth, &home) {
+            return None;
+        }
+        *cube = defect_trial;
+    }
+    centers_solved(cube).then_some(moves)
+}
+
 /// Whether a 3×3 cubie state is reachable on a real 3×3 (the three standard
 /// invariants). A reduced even cube can violate the edge invariants — that is
 /// OLL/PLL parity, which `solve_reduction` resolves before finishing.
@@ -109,7 +252,8 @@ pub fn finish_3x3(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Move>> 
     let size = cube.size();
     let size3 = CubeSize::new(3).unwrap();
     let cube3 = extract_3x3(cube);
-    if !is_solvable(&sticker_to_cubie(&cube3)) {
+    let cubie = sticker_to_cubie_unchecked(&cube3)?;
+    if !is_solvable(&cubie) {
         return None; // OLL/PLL parity
     }
     let moves3 = solve_sticker(&cube3, solver)?;
@@ -245,13 +389,40 @@ pub fn solve_reduction(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Mo
     solve_reduction_core(cube, solver).map(simplify)
 }
 
+pub fn solve_reduction_with_control(
+    cube: &mut StickerCube,
+    solver: &Solver,
+    control: &super::ReductionControl,
+) -> Result<Vec<Move>, super::ReductionError> {
+    let mut work = cube.clone();
+    let result = super::with_reduction_control(control, || solve_reduction(&mut work, solver));
+    if !control.should_continue() {
+        Err(super::ReductionError::CancelledOrTimedOut)
+    } else if let Some(solution) = result {
+        *cube = work;
+        Ok(solution)
+    } else {
+        Err(super::ReductionError::Unsolved)
+    }
+}
+
 fn solve_reduction_core(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<Move>> {
-    use super::edges_det::{at_target, home_swapped_target, home_targets, solve_to_target};
+    if !super::reduction_checkpoint() {
+        return None;
+    }
+    use super::edges_det::{
+        at_target, home_swapped_target, home_targets, solve_edges_with_stall, solve_to_target,
+    };
     use super::{centers_solved, solve_centers, solve_edges};
     let dbg = std::env::var("RDBG").is_ok();
     let n = cube.size().get();
     let mut moves = Vec::new();
     moves.extend(solve_centers(cube));
+    if !super::reduction_checkpoint() {
+        return None;
+    }
+    let center_base = cube.clone();
+    let center_moves = moves.clone();
     let home = home_targets(n);
     let even = n.is_multiple_of(2);
     // The centre solver isn't 100% reliable on big cubes (≈n=8 it stalls on some
@@ -260,8 +431,11 @@ fn solve_reduction_core(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<M
     // very often solves where the original stalled. So only solve edges (and try an
     // immediate finish) when the centres are already solid; otherwise fall straight into
     // the disturbance search.
+    let mut stalled_slot = None;
     if centers_solved(cube) {
-        moves.extend(solve_edges(cube));
+        let outcome = solve_edges_with_stall(cube);
+        moves.extend(outcome.moves);
+        stalled_slot = outcome.stalled_slot;
     } else if dbg {
         eprintln!("[red] centres stalled on first pass; relying on disturbance recovery");
     }
@@ -303,8 +477,99 @@ fn solve_reduction_core(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<M
         return Some(moves);
     }
 
-    // Parity search. The edges stalled — an odd wing permutation in one or more wing orbits
-    // (n-2 wings/edge split into orbits with independent parities; larger cubes have more).
+    // Polynomial sticker-only orbit normalization. Unlike the legacy path below,
+    // this never treats a first stalled slot as parity: each orbit must reach the
+    // exact visible E_d or D_d form, and D_d is corrected with a signature-tested
+    // center-safe template local to that orbit. Try the untouched center-solved
+    // state first; a global greedy edge pass may turn a simple orbit residual into
+    // a harder (though equivalent) normalizer state before it stalls.
+    for (candidate, prefix) in [(&center_base, &center_moves), (&base, &base_moves)] {
+        if !super::reduction_checkpoint() {
+            return None;
+        }
+        if !centers_solved(candidate) {
+            continue;
+        }
+        let mut c = candidate.clone();
+        if let Some(normalized) = normalize_and_correct_wing_orbits(&mut c) {
+            let mut m = prefix.clone();
+            m.extend(normalized);
+            if try_finish(&mut c, &mut m) {
+                *cube = c;
+                return Some(m);
+            }
+        } else if dbg {
+            eprintln!("[red] visible orbit normalizer hit a coverage failure; trying fallback");
+        }
+    }
+
+    // Greedy polynomial parity correction. The edge solver returns the first slot its
+    // even-cycle library cannot place; use that depth to learn a batched candidate mask
+    // from a clean base in at most K attempts. This resolves single high orbits and common
+    // multi-orbit cases without powerset enumeration. It is not yet a completeness proof;
+    // the bounded legacy recovery below remains the conservative fallback.
+    if centers_solved(&base) {
+        let size = CubeSize::new(n).ok()?;
+        let orbit_count = (n - 2) / 2;
+        let mut selected = Vec::<usize>::new();
+        for _ in 0..orbit_count {
+            if !super::reduction_checkpoint() {
+                return None;
+            }
+            let Some(slot) = stalled_slot else {
+                break;
+            };
+            let Some(depth) = wing_orbit_depth(slot, n) else {
+                break;
+            };
+            if dbg {
+                eprintln!("[red] direct parity: stalled slot {slot}, orbit depth {depth}");
+            }
+            if selected.contains(&depth) {
+                if dbg {
+                    eprintln!("[red] direct parity repeated orbit {depth}; using fallback");
+                }
+                break;
+            }
+            selected.push(depth);
+
+            // Reapply the accumulated candidate mask to the same clean stalled
+            // state. Re-reducing after each individual flip can redistribute wing
+            // parity; batching the learned depths before one reduction preserves
+            // the intended independent-orbit toggles without powerset enumeration.
+            let mut c = base.clone();
+            let mut m = base_moves.clone();
+            for &selected_depth in &selected {
+                let flipper = if even {
+                    super::slice_from(Face::Right, n, selected_depth, 1)
+                } else {
+                    Move::wide(Face::Right, size, selected_depth + 1, 1)
+                };
+                c.apply_move(flipper).ok()?;
+                m.push(flipper);
+            }
+            m.extend(solve_centers(&mut c));
+            if !centers_solved(&c) {
+                break;
+            }
+            let outcome = solve_edges_with_stall(&mut c);
+            m.extend(outcome.moves);
+            stalled_slot = outcome.stalled_slot;
+            if dbg {
+                eprintln!(
+                    "[red] direct parity: selected {selected:?}, next stall {stalled_slot:?}"
+                );
+            }
+            if try_finish(&mut c, &mut m) {
+                *cube = c;
+                return Some(m);
+            }
+        }
+    }
+
+    // Legacy recovery remains as a conservative fallback while the direct orbit path
+    // accumulates larger-N evidence. It is bounded below and must not be widened into
+    // an unbounded powerset search.
     let rep = parity_repertoire(n);
 
     // Orbit flippers: the wings split into K=⌊(n-2)/2⌋ orbits {d, n-1-d}, and one
@@ -334,6 +599,9 @@ fn solve_reduction_core(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<M
         let mut masks: Vec<u32> = (1u32..(1u32 << flippers.len())).collect();
         masks.sort_by_key(|m| (m.count_ones(), *m));
         for mask in masks {
+            if !super::reduction_checkpoint() {
+                return None;
+            }
             let mut c = b.clone();
             let mut m = bm.to_vec();
             let mut ok = true;
@@ -381,6 +649,9 @@ fn solve_reduction_core(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<M
     // the slow cumulative walk below.
     if !centers_solved(&base) {
         for dist in &rep {
+            if !super::reduction_checkpoint() {
+                return None;
+            }
             let mut rb = base.clone();
             let mut rm = base_moves.clone();
             let mut ok = true;
@@ -424,6 +695,9 @@ fn solve_reduction_core(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<M
         let mut c = base.clone();
         let mut m = base_moves.clone();
         for dist in &rep {
+            if !super::reduction_checkpoint() {
+                return None;
+            }
             for &mv in dist {
                 c.apply_move(mv).ok()?;
                 m.push(mv);
@@ -444,6 +718,9 @@ fn solve_reduction_core(cube: &mut StickerCube, solver: &Solver) -> Option<Vec<M
     // catching the lone flip a single odd orbit needs that the cumulative walk's fixed path
     // missed.
     for dist in &rep {
+        if !super::reduction_checkpoint() {
+            return None;
+        }
         let mut c = base.clone();
         let mut m = base_moves.clone();
         for &mv in dist {
@@ -491,6 +768,290 @@ mod tests {
         cube
     }
 
+    fn wing_pair(cube: &StickerCube, edge: usize, wing: usize) -> (Color, Color) {
+        let (a, b) = super::super::edges::wing_cells(edge, wing, cube.size().get());
+        (
+            cube.color_at(a.0, a.1, a.2).unwrap(),
+            cube.color_at(b.0, b.1, b.2).unwrap(),
+        )
+    }
+
+    #[test]
+    fn controlled_reduction_cancels_without_mutating_input() {
+        use std::time::Duration;
+
+        let solver = Solver::new();
+        let size = CubeSize::new(4).unwrap();
+        let mut input = StickerCube::solved(size);
+        input.apply_move(Move::face(Face::Right, size, 1)).unwrap();
+        let before = input.clone_snapshot();
+
+        let cancelled = super::super::ReductionControl::unlimited();
+        cancelled.cancel();
+        assert_eq!(
+            solve_reduction_with_control(&mut input, &solver, &cancelled),
+            Err(super::super::ReductionError::CancelledOrTimedOut)
+        );
+        assert_eq!(input.clone_snapshot(), before);
+
+        let timed_out = super::super::ReductionControl::with_timeout(Duration::ZERO);
+        assert_eq!(
+            solve_reduction_with_control(&mut input, &solver, &timed_out),
+            Err(super::super::ReductionError::CancelledOrTimedOut)
+        );
+        assert_eq!(input.clone_snapshot(), before);
+
+        let mut solved = StickerCube::solved(size);
+        let solution = solve_reduction_with_control(
+            &mut solved,
+            &solver,
+            &super::super::ReductionControl::unlimited(),
+        )
+        .expect("unlimited control should preserve normal solving");
+        assert!(solution.is_empty());
+        assert!(solved.is_solved());
+    }
+
+    #[test]
+    fn parity_template_is_center_safe_and_orbit_local() {
+        for n in [4usize, 5, 6, 7, 8, 20, 66, 132] {
+            let size = CubeSize::new(n).unwrap();
+            let solved = StickerCube::solved(size);
+            for depth in 1..=(n - 2) / 2 {
+                let sequence = orbit_parity_template(n, depth).expect("valid orbit template");
+                let mut cube = solved.clone();
+                for &mv in &sequence {
+                    cube.apply_move(mv).unwrap();
+                }
+                assert!(
+                    super::super::centers_solved(&cube),
+                    "n={n} d={depth}: centers changed"
+                );
+
+                // Corner stickers and every non-target wing orbit, including the
+                // odd-cube midge, are exact sticker-state invariants of T_d.
+                for face in Face::ALL {
+                    for (row, col) in [(0, 0), (0, n - 1), (n - 1, 0), (n - 1, n - 1)] {
+                        assert_eq!(
+                            cube.color_at(face, row, col),
+                            solved.color_at(face, row, col),
+                            "n={n} d={depth}: corner sticker changed"
+                        );
+                    }
+                }
+                let mut target_changed = false;
+                for edge in 0..12 {
+                    for wing in 1..=n - 2 {
+                        let slot = edge * (n - 2) + wing - 1;
+                        let changed =
+                            wing_pair(&cube, edge, wing) != wing_pair(&solved, edge, wing);
+                        if wing_orbit_depth(slot, n) == Some(depth) {
+                            target_changed |= changed;
+                        } else {
+                            assert!(!changed, "n={n} d={depth}: changed non-target slot {slot}");
+                        }
+                    }
+                }
+                assert!(
+                    target_changed,
+                    "n={n} d={depth}: template had no target effect"
+                );
+                assert_eq!(
+                    super::super::edges_det::orbit_pairs(&cube, depth),
+                    canonical_defect_pairs(),
+                    "n={n} d={depth}: non-canonical visible defect signature"
+                );
+
+                for mv in sequence.iter().rev() {
+                    cube.apply_move(mv.inverse()).unwrap();
+                }
+                assert!(cube.is_solved(), "n={n} d={depth}: inverse replay failed");
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_visible_forms_scale_beyond_word_width() {
+        for n in [66usize, 132] {
+            let k = (n - 2) / 2;
+            let masks = [
+                vec![1usize, k],
+                (1..=k).step_by(2).collect::<Vec<_>>(),
+                (1..=k).collect::<Vec<_>>(),
+            ];
+            for depths in masks {
+                let mut cube = StickerCube::solved(CubeSize::new(n).unwrap());
+                for &depth in &depths {
+                    for mv in orbit_parity_template(n, depth).unwrap() {
+                        cube.apply_move(mv).unwrap();
+                    }
+                }
+                let start = cube.clone();
+                let correction = normalize_and_correct_wing_orbits(&mut cube)
+                    .unwrap_or_else(|| panic!("canonical normalizer failed n={n} {depths:?}"));
+                assert!(cube.is_solved(), "canonical normalizer unsolved n={n}");
+                let mut replay = start;
+                for mv in correction {
+                    replay.apply_move(mv).unwrap();
+                }
+                assert!(replay.is_solved(), "canonical replay failed n={n}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "large noncanonical orbit-local transport/resource gate; run in release mode"]
+    fn noncanonical_n66_n132_orbit_transport_replays() {
+        use super::super::edges::wing_base_cycles_for_depths;
+        use super::super::{apply_all, centers_solved};
+
+        for n in [66usize, 132] {
+            let k = (n - 2) / 2;
+            let mut cube = StickerCube::solved(CubeSize::new(n).unwrap());
+            for depth in [1usize, k] {
+                let cycles = wing_base_cycles_for_depths(n, &[depth]);
+                apply_all(&mut cube, &cycles[depth % cycles.len()]);
+            }
+            assert!(centers_solved(&cube));
+            assert!(!cube.is_solved());
+            let start = cube.clone();
+            let correction = normalize_and_correct_wing_orbits(&mut cube)
+                .unwrap_or_else(|| panic!("N={n} noncanonical orbit transport coverage"));
+            assert!(cube.is_solved());
+            let mut replay = start;
+            apply_all(&mut replay, &correction);
+            assert!(replay.is_solved());
+        }
+    }
+
+    #[test]
+    fn direct_stall_identifies_orbit_and_reduction_recovers() {
+        use super::super::edges_det::solve_edges_with_stall;
+        use super::super::{centers_solved, slice_from, solve_centers};
+
+        let n = 4;
+        let mut parity = StickerCube::solved(CubeSize::new(n).unwrap());
+        parity.apply_move(slice_from(Face::Right, n, 1, 1)).unwrap();
+        solve_centers(&mut parity);
+        assert!(centers_solved(&parity));
+        let outcome = solve_edges_with_stall(&mut parity);
+        let slot = outcome
+            .stalled_slot
+            .expect("inner slice should create wing parity");
+        assert_eq!(wing_orbit_depth(slot, n), Some(1));
+
+        let solver = Solver::new();
+        let mut original = StickerCube::solved(CubeSize::new(n).unwrap());
+        original
+            .apply_move(slice_from(Face::Right, n, 1, 1))
+            .unwrap();
+        let start = original.clone();
+        let solution = solve_reduction(&mut original, &solver).expect("direct orbit recovery");
+        assert!(original.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+
+        // Two independent even-cube wing orbits: correction must iterate by
+        // reported stall depth rather than enumerate a two-bit powerset.
+        let n = 6;
+        let mut multi = StickerCube::solved(CubeSize::new(n).unwrap());
+        for depth in [1usize, 2] {
+            multi
+                .apply_move(slice_from(Face::Right, n, depth, 1))
+                .unwrap();
+        }
+        let start = multi.clone();
+        let solution = solve_reduction(&mut multi, &solver).expect("multi-orbit recovery");
+        assert!(multi.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    #[test]
+    #[ignore = "large-N research gate; run explicitly in release mode"]
+    fn direct_orbit_nine_recovery() {
+        use super::super::slice_from;
+        let n = 20;
+        let mut cube = StickerCube::solved(CubeSize::new(n).unwrap());
+        cube.apply_move(slice_from(Face::Right, n, 9, 1)).unwrap();
+        let start = cube.clone();
+        let solver = Solver::new();
+        let solution = solve_reduction(&mut cube, &solver).expect("orbit-nine recovery");
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    #[test]
+    #[ignore = "large-N sparse multi-orbit research gate; run explicitly in release mode"]
+    fn sparse_orbits_one_and_nine_recovery() {
+        use super::super::slice_from;
+        let n = 20;
+        let mut cube = StickerCube::solved(CubeSize::new(n).unwrap());
+        for depth in [1usize, 9] {
+            cube.apply_move(slice_from(Face::Right, n, depth, 1))
+                .unwrap();
+        }
+        let start = cube.clone();
+        let solver = Solver::new();
+        let solution = solve_reduction(&mut cube, &solver).expect("sparse orbit recovery");
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    #[test]
+    #[ignore = "large-N dense/alternating research gate; run explicitly in release mode"]
+    fn dense_and_alternating_n20_recovery() {
+        use super::super::slice_from;
+        let n = 20;
+        let solver = Solver::new();
+        for depths in [
+            (1usize..=9).step_by(2).collect::<Vec<_>>(),
+            (1usize..=9).collect(),
+        ] {
+            let mut cube = StickerCube::solved(CubeSize::new(n).unwrap());
+            for &depth in &depths {
+                cube.apply_move(slice_from(Face::Right, n, depth, 1))
+                    .unwrap();
+            }
+            let start = cube.clone();
+            let solution = solve_reduction(&mut cube, &solver)
+                .unwrap_or_else(|| panic!("N=20 orbit recovery failed for {depths:?}"));
+            assert!(cube.is_solved(), "N=20 not solved for {depths:?}");
+            let mut replay = start;
+            for mv in solution {
+                replay.apply_move(mv).unwrap();
+            }
+            assert!(replay.is_solved(), "N=20 replay failed for {depths:?}");
+        }
+    }
+
+    #[test]
+    fn stalled_slots_map_to_every_dynamic_wing_orbit() {
+        for n in [4usize, 5, 20, 66, 132] {
+            let k = (n - 2) / 2;
+            let depths: std::collections::HashSet<usize> = (0..12 * (n - 2))
+                .filter_map(|slot| wing_orbit_depth(slot, n))
+                .collect();
+            assert_eq!(depths.len(), k, "n={n}");
+            assert!(depths.contains(&1));
+            assert!(depths.contains(&k));
+        }
+    }
+
     /// Diagnostic: after pairing edges to home (with a wing-parity toggle to reach a
     /// paired state), print the reduced 3×3's invariants per seed. If unsolvable cases
     /// are dominated by `cp_par != ep_par` with `ep_par == even`, the failure is odd
@@ -516,7 +1077,10 @@ mod tests {
                 println!("seed {seed}: NOT paired");
                 continue;
             }
-            let cc = sticker_to_cubie(&extract_3x3(&cube));
+            let Some(cc) = sticker_to_cubie_unchecked(&extract_3x3(&cube)) else {
+                println!("seed {seed}: malformed reduced piece set");
+                continue;
+            };
             let co: u32 = cc.co.iter().map(|&x| x as u32).sum();
             let eo: u32 = cc.eo.iter().map(|&x| x as u32).sum();
             println!(
@@ -740,6 +1304,379 @@ mod tests {
             eprintln!("n={n}: {ok}/{trials} (depth {}); fails {fails:?}", n * 20);
         }
         assert_eq!(total_fail, 0, "stress test found reliability gaps");
+    }
+
+    /// Bounded first size above the product ceiling: full centers→edges→3×3 reduction,
+    /// controlled by the same 290-second internal deadline as the largest WASM route.
+    #[test]
+    #[ignore = "large end-to-end research/resource gate; run explicitly in release mode"]
+    fn controlled_n12_end_to_end_replays() {
+        use std::time::Duration;
+
+        let n = 12usize;
+        let solver = Solver::new();
+        let mut cube = scramble(n, 0xC000, n * 12);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(290));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .expect("N=12 controlled end-to-end reduction");
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Larger bounded full-reduction research gate after sparse parity and isolated
+    /// edge transport: randomized wide turns disturb both centers and wing orbits.
+    #[test]
+    #[ignore = "N=20 end-to-end research/resource gate; run explicitly in release mode"]
+    fn controlled_n20_end_to_end_replays() {
+        use std::time::Duration;
+
+        let n = 20usize;
+        let solver = Solver::new();
+        let mut cube = scramble(n, 0xD000, n * 4);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(290));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .expect("N=20 controlled end-to-end reduction");
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Additional full N=20 seeds share the expensive per-size libraries within one
+    /// process and replay every returned path. This is the reliability companion to
+    /// the single measured resource gate above.
+    #[test]
+    #[ignore = "multi-seed N=20 end-to-end reliability gate; run in release mode"]
+    fn controlled_n20_additional_seeds_replay() {
+        use std::time::Duration;
+
+        let n = 20usize;
+        let solver = Solver::new();
+        for seed in [0xD001u64, 0xD002] {
+            let mut cube = scramble(n, seed, n * 4);
+            let start = cube.clone();
+            let control = super::super::ReductionControl::with_timeout(Duration::from_secs(290));
+            let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+                .unwrap_or_else(|error| panic!("N=20 seed {seed:#x}: {error:?}"));
+            assert!(cube.is_solved(), "N=20 seed {seed:#x} not solved");
+            let mut replay = start;
+            for mv in solution {
+                replay.apply_move(mv).unwrap();
+            }
+            assert!(replay.is_solved(), "N=20 seed {seed:#x} replay failed");
+        }
+    }
+
+    /// Isolate and replay-verify the N=24 center stage before edge/parity recovery.
+    #[test]
+    #[ignore = "N=24 center-stage research gate; run in release mode"]
+    fn controlled_n24_centers_solve() {
+        use super::super::{centers_solved, solve_centers};
+        use std::time::Duration;
+
+        let n = 24usize;
+        let mut cube = scramble(n, 0xE000, n * 3);
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(300));
+        let moves = super::super::with_reduction_control(&control, || solve_centers(&mut cube));
+        assert!(control.should_continue(), "N=24 center stage timed out");
+        let mut replay = scramble(n, 0xE000, n * 3);
+        for mv in moves {
+            replay.apply_move(mv).unwrap();
+        }
+        assert_eq!(replay.clone_snapshot(), cube.clone_snapshot());
+        assert!(centers_solved(&cube), "N=24 center stage stalled");
+    }
+
+    /// First full center+edge replay gate beyond N=20. Kept shallower to bound
+    /// research cost while still mixing randomized outer and wide turns.
+    #[test]
+    #[ignore = "N=24 end-to-end research/resource gate; run in release mode"]
+    fn controlled_n24_end_to_end_replays() {
+        use std::time::Duration;
+
+        let n = 24usize;
+        let solver = Solver::new();
+        let mut cube = scramble(n, 0xE000, n * 3);
+        let start = cube.clone();
+        // N=24 is research-only and not constrained by the app's 300-second
+        // watchdog; callers can supply a resource budget appropriate to their hardware.
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(600));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=24 end-to-end reduction: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Independent N=24 reliability seeds share the expensive center/edge
+    /// libraries and strictly replay every returned legal-move path.
+    #[test]
+    #[ignore = "multi-seed N=24 end-to-end reliability gate; run in release mode"]
+    fn controlled_n24_additional_seeds_replay() {
+        use std::time::Duration;
+
+        let n = 24usize;
+        let solver = Solver::new();
+        for seed in [0xE001u64, 0xE002] {
+            let mut cube = scramble(n, seed, n * 3);
+            let start = cube.clone();
+            let control = super::super::ReductionControl::with_timeout(Duration::from_secs(600));
+            let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+                .unwrap_or_else(|error| panic!("N=24 seed {seed:#x}: {error:?}"));
+            assert!(cube.is_solved(), "N=24 seed {seed:#x} not solved");
+            let mut replay = start;
+            for mv in solution {
+                replay.apply_move(mv).unwrap();
+            }
+            assert!(replay.is_solved(), "N=24 seed {seed:#x} replay failed");
+        }
+    }
+
+    /// First strict full replay/resource gate beyond the established N=24 corpus.
+    #[test]
+    #[ignore = "N=28 end-to-end research/resource gate; run in release mode"]
+    fn controlled_n28_end_to_end_replays() {
+        use std::time::Duration;
+
+        let n = 28usize;
+        let solver = Solver::new();
+        let mut cube = scramble(n, 0xF000, n * 3);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(900));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=28 end-to-end reduction: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// One independent N=28 reliability seed, kept separate from the measured
+    /// resource gate so either command remains externally rerunnable.
+    #[test]
+    #[ignore = "additional N=28 end-to-end reliability gate; run in release mode"]
+    fn controlled_n28_additional_seed_replays() {
+        use std::time::Duration;
+
+        let n = 28usize;
+        let seed = 0xF001u64;
+        let solver = Solver::new();
+        let mut cube = scramble(n, seed, n * 3);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(900));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=28 seed {seed:#x}: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Isolate and replay-verify N=32 centers before later edge/parity work.
+    #[test]
+    #[ignore = "N=32 center-stage research gate; run in release mode"]
+    fn controlled_n32_centers_solve() {
+        use super::super::{centers_solved, solve_centers};
+        use std::time::Duration;
+
+        let n = 32usize;
+        let mut cube = scramble(n, 0xF100, n * 3);
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(600));
+        let moves = super::super::with_reduction_control(&control, || solve_centers(&mut cube));
+        let mut replay = scramble(n, 0xF100, n * 3);
+        for mv in moves {
+            replay.apply_move(mv).unwrap();
+        }
+        assert_eq!(replay.clone_snapshot(), cube.clone_snapshot());
+        assert!(control.should_continue(), "N=32 center stage timed out");
+        assert!(centers_solved(&cube), "N=32 center stage stalled");
+    }
+
+    /// Strict full N=32 replay/resource gate beyond the N=28 corpus.
+    #[test]
+    #[ignore = "N=32 end-to-end research/resource gate; run in release mode"]
+    fn controlled_n32_end_to_end_replays() {
+        use std::time::Duration;
+
+        let n = 32usize;
+        let solver = Solver::new();
+        let mut cube = scramble(n, 0xF100, n * 3);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(1200));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=32 end-to-end reduction: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Independent N=32 reliability seed after center-build optimizations.
+    #[test]
+    #[ignore = "additional N=32 end-to-end reliability gate; run in release mode"]
+    fn controlled_n32_additional_seed_replays() {
+        use std::time::Duration;
+
+        let n = 32usize;
+        let seed = 0xF101u64;
+        let solver = Solver::new();
+        let mut cube = scramble(n, seed, n * 3);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(1200));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=32 seed {seed:#x}: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Strict full replay/resource gate beyond N=32.
+    #[test]
+    #[ignore = "N=36 end-to-end research/resource gate; run in release mode"]
+    fn controlled_n36_end_to_end_replays() {
+        use std::time::Duration;
+
+        let n = 36usize;
+        let solver = Solver::new();
+        let mut cube = scramble(n, 0xF200, n * 3);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(1500));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=36 end-to-end reduction: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Independent N=36 reliability seed under the compact center representation.
+    #[test]
+    #[ignore = "additional N=36 end-to-end reliability gate; run in release mode"]
+    fn controlled_n36_additional_seed_replays() {
+        use std::time::Duration;
+
+        let n = 36usize;
+        let seed = 0xF201u64;
+        let solver = Solver::new();
+        let mut cube = scramble(n, seed, n * 3);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(1500));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=36 seed {seed:#x}: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Strict full replay/resource gate beyond N=36.
+    #[test]
+    #[ignore = "N=40 end-to-end research/resource gate; run in release mode"]
+    fn controlled_n40_end_to_end_replays() {
+        use std::time::Duration;
+
+        let n = 40usize;
+        let solver = Solver::new();
+        let mut cube = scramble(n, 0xF300, n * 3);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(1800));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=40 end-to-end reduction: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Independent N=40 reliability seed under compact center effects.
+    #[test]
+    #[ignore = "additional N=40 end-to-end reliability gate; run in release mode"]
+    fn controlled_n40_additional_seed_replays() {
+        use std::time::Duration;
+
+        let n = 40usize;
+        let seed = 0xF301u64;
+        let solver = Solver::new();
+        let mut cube = scramble(n, seed, n * 3);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(1800));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=40 seed {seed:#x}: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Strict full replay/resource gate beyond N=40.
+    #[test]
+    #[ignore = "N=44 end-to-end research/resource gate; run in release mode"]
+    fn controlled_n44_end_to_end_replays() {
+        use std::time::Duration;
+
+        let n = 44usize;
+        let solver = Solver::new();
+        let mut cube = scramble(n, 0xF400, n * 3);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(2100));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=44 end-to-end reduction: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
+    }
+
+    /// Independent N=44 reliability seed at the current full-solve frontier.
+    #[test]
+    #[ignore = "additional N=44 end-to-end reliability gate; run in release mode"]
+    fn controlled_n44_additional_seed_replays() {
+        use std::time::Duration;
+
+        let n = 44usize;
+        let seed = 0xF401u64;
+        let solver = Solver::new();
+        let mut cube = scramble(n, seed, n * 3);
+        let start = cube.clone();
+        let control = super::super::ReductionControl::with_timeout(Duration::from_secs(2100));
+        let solution = solve_reduction_with_control(&mut cube, &solver, &control)
+            .unwrap_or_else(|error| panic!("N=44 seed {seed:#x}: {error:?}"));
+        assert!(cube.is_solved());
+        let mut replay = start;
+        for mv in solution {
+            replay.apply_move(mv).unwrap();
+        }
+        assert!(replay.is_solved());
     }
 
     /// "Solve ANYTHING": the large sizes 9–11 (both parities), replay-validated — proving

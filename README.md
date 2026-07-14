@@ -30,17 +30,18 @@ cargo tauri dev      # run the app in a dev window
 cargo tauri build    # native installer for the current OS
 ```
 
-`cargo tauri build` produces a native bundle per OS — `.app`/`.dmg` (macOS),
-`.msi`/`.exe` (Windows), `.deb`/`.AppImage` (Linux) — all from this one codebase
-(the 3-OS matrix in `.github/workflows/desktop.yml` builds them in CI). Requires
-a stable Rust toolchain plus the [Tauri prerequisites](https://tauri.app/start/prerequisites/)
+`cargo tauri build` can produce native bundles per OS — `.app`/`.dmg` (macOS),
+`.msi`/`.exe` (Windows), and `.deb`/`.AppImage` (Linux). The three-OS CI matrix
+builds `.app`/`.dmg`, `.msi`/NSIS `.exe`, and `.deb`; it intentionally skips the
+flakier Linux AppImage bundler. Requires a stable Rust toolchain plus the
+[Tauri prerequisites](https://tauri.app/start/prerequisites/)
 (on Linux, the WebKitGTK dev packages listed in `desktop.yml`).
 
 ## How Cube Solver works
 
 Cube Solver is the polished web UI **driven by the real Rust solver**, packaged as a
-native desktop app. Nothing in the browser/webview is simulated — every scramble and
-solve is computed by the compiled Rust:
+native desktop app. Sizes 2×2–11×11 use compiled Rust/WASM solvers; larger sizes are
+explicitly labeled visualization-only rather than presented as searched solutions:
 
 ```
 cube_core + cube_solver  ──wasm-pack──▶  web/pkg/  (WebAssembly)
@@ -55,14 +56,15 @@ cube_core + cube_solver  ──wasm-pack──▶  web/pkg/  (WebAssembly)
 1. **Scramble** — applies random face turns to the on-screen cube *instantly*. On
    the 2×2/3×3 the turns are outer faces only (so the solver can invert them);
    bigger cubes mix **every layer** for a proper full scramble.
-2. **Solve** — the cube's **sticker state** (not the scramble moves) is handed to the
-   solver, which returns the fewest-move, replay-verified solution; the cube then
+2. **Solve** — the cube's complete **sticker state** (never the scramble moves) is
+   handed to the solver, which returns a replay-verified solution; the cube then
    animates it.
    - It runs in a **Web Worker** (off the main thread), so the UI stays responsive
-     and a long/hard solve can be **cancelled** (the worker is terminated).
-   - A **"scramble hidden from the solver"** panel proves it isn't cheating: the
-     solver only sees the 54 sticker colours, and its solution is usually *shorter*
-     than the scramble, so it can't be replaying the inverse.
+     and a long/hard solve can be **cancelled**. Reduction also has cooperative
+     internal deadlines; worker termination remains the hard-stop backstop.
+   - Automatic scrambles use the platform cryptographic RNG where available and
+     avoid adjacent same-axis turns. The worker reconstructs the cube from only the
+     `6·N²` visible color indices, so it cannot replay a hidden inverse sequence.
 3. **Solver race / best-path solver** — the panel adapts to the cube:
    - **3×3** — a real **two-phase (Kociemba) solver** (`cube_solver::kociemba`): it
      orients the pieces into the UD-slice subgroup (phase 1) then solves the
@@ -74,12 +76,14 @@ cube_core + cube_solver  ──wasm-pack──▶  web/pkg/  (WebAssembly)
      (exact, bidirectional BFS), **beam search**, and an **island genetic algorithm**;
      the shortest verified solution wins.
 
-**What actually solves:** the **2×2 and 3×3 are solved for real** — the 3×3 by the
-two-phase solver (any scramble), the 2×2 by the engine race. 4×4 and up render and
-scramble fully but are **visual** (Solve plays back the inverse); the in-app banner
-tells you which mode you're in. Real solving past the 3×3 needs the **reduction
-method** for arbitrary N (centers → edge pairing → reduced 3×3 + parity) — that's the
-work-in-progress `cube_solver::reduction` module (feature-gated, not yet wired in).
+**What actually solves:** **2×2 and 3×3 are production solver paths** — the 3×3 by
+the two-phase solver (any legal scramble), the 2×2 by the engine race. **4×4–11×11
+use the real reduction implementation** (centers → wing pairing → reduced 3×3 +
+parity), and every returned path is replayed before success is reported; this range
+remains experimental while slow reliability gates are moved into release CI. **12×12
+and above are currently visualization-only** in the app and are labeled as such.
+Research toward resource-bounded arbitrary N is tracked in
+[`docs/ARBITRARY_N_RESEARCH.md`](docs/ARBITRARY_N_RESEARCH.md).
 
 ### Swarm
 
@@ -91,8 +95,8 @@ card is how many stickers are still out of place.
 
 ### Robustness notes
 
-- `web/solver-worker.js` loads the WASM and solves off-thread; the page falls back
-  to a bounded (~1.5 s) main-thread solve if Web Workers aren't available.
+- `web/solver-worker.js` loads WASM and solves off-thread. A bounded main-thread
+  fallback exists only for 2×2/3×3; reduction never runs on the UI thread.
 - three.js (r128) is vendored in `web/vendor/`, so the app works offline.
 - The Tauri shell builds the WASM via `beforeBuildCommand`, so a fresh
   `cargo tauri build` is self-contained.
@@ -104,7 +108,7 @@ card is how many stickers are still out of place.
 | Crate | Responsibility |
 |-------|----------------|
 | `cube_core` | Cube model (`StickerCube`), moves (incl. wide/inner-slice), scramble generation. O(N) in-place layer rotation so huge cubes stay fast. |
-| `cube_solver` | The real 3×3 two-phase solver (`kociemba`); solver workers (`DeterministicSolver`, `BeamSearchWorker`, `EvolutionaryWorker`) behind a `SolverWorker` trait, run concurrently; and a feature-gated WIP `reduction` module for arbitrary-N solving. |
+| `cube_solver` | The real 3×3 two-phase solver (`kociemba`); exact, beam, and island-evolution workers; and the feature-gated experimental N×N reduction engine. |
 | `solver_store` | SQLite (bundled) persistence of solve history. |
 | `solver_lab_app` | `eframe`/`egui` GUI: 3D viewport, 2D net, the wall-of-cubes grid, controls, history. |
 
@@ -148,16 +152,17 @@ History is stored in an OS-appropriate data directory (Application Support /
 
 ### Scaling to massive cubes
 
-The cube model's in-place rotation makes a single inner-slice turn ~O(N) instead
-of O(N²), so cubes with thousands of layers can be generated, manipulated,
-replayed, and visualized quickly. The research-backed path to *solving* arbitrary
-N is the **reduction method** (centers → edge pairing → reduced 3×3 + parity),
-which is O(N²) in moves and polynomial time (Demaine et al., ESA 2011 — diameter
-Θ(N²/log N)). That solver lives in `cube_solver::reduction` and is **work in
-progress** (see its module `STATUS` note): odd-cube fixed-center orientation is
-implemented and verified; the full centers/edges/3×3+parity pipeline is the next
-milestone. RL/ML approaches (DeepCubeA et al.) are size-locked to small fixed
-puzzles and do not generalize to arbitrary N.
+The cube model touches only the affected bands: a strict inner-slice turn is O(N)
+and an outer-face turn is O(N²). A repeatable release benchmark is provided at
+`crates/cube_core/examples/turn_scaling.rs`. The research-backed path to solving
+resource-bounded arbitrary N is deterministic **reduction**; evolutionary/RL
+methods alone do not provide completeness across dimensions. The reduction pipeline
+now includes dynamic visible-form parity normalization and orbit-local correction;
+full legal-move replay evidence extends through research-only N=44. The shipped UI
+remains capped at N=11 because frontier reliability and finite-resource costs—not a
+hidden history shortcut—still limit honest product claims. See
+[`docs/ARBITRARY_N_RESEARCH.md`](docs/ARBITRARY_N_RESEARCH.md) for evidence, failed
+experiments, required gates, and primary references.
 
 ## Development
 
@@ -166,6 +171,7 @@ cargo test --workspace                                   # all tests
 cargo clippy --workspace --all-targets -- -D warnings    # lint gate
 cargo fmt --all -- --check                               # format gate
 python3 tools/gen-index.py                                # regenerate web/index.html
+python3 tools/frontend-smoke.py                           # HTML/ARIA/JS/worker contract smoke
 ```
 
 CI runs format + clippy + tests + release build on Linux, macOS, and Windows.
@@ -184,4 +190,4 @@ stale, so a broken frontend can never be silently embedded into a bundle.
 
 ## License
 
-See `Cargo.toml` workspace metadata.
+MIT — see [`LICENSE`](LICENSE).

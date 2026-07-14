@@ -233,7 +233,7 @@ pub fn draw_scene(
     painter.rect_filled(rect, 4.0, egui::Color32::from_gray(18));
 
     let stickers = build_projected_stickers(cube, sample_dim, *angles, active_turn, rect);
-    let outline = egui::Stroke::new(1.0, egui::Color32::from_gray(8));
+    let outline = egui::Stroke::new(1.0_f32, egui::Color32::from_gray(8));
     for sticker in &stickers {
         painter.add(egui::Shape::convex_polygon(
             sticker.points.to_vec(),

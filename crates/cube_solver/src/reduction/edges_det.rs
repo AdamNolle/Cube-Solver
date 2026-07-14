@@ -11,7 +11,7 @@
 //! Parity (an odd wing permutation a 3×3 can't have — OLL/PLL) is handled one level
 //! up by `finish::solve_reduction`, which toggles it with an inner slice.
 
-use super::edges::wing_repertoire;
+use super::edges::wing_repertoire_for_orbit;
 use super::{apply_all, centers_solved};
 use cube_core::{Color, CubeSize, CubeState, Face, Move, StickerCube};
 
@@ -25,6 +25,29 @@ fn face_ord(f: Face) -> usize {
 /// Number of wing slots: 12 edges × (n-2) wings.
 fn n_slots(n: usize) -> usize {
     12 * (n - 2)
+}
+
+/// Mirrored wing-orbit key for a slot. On odd cubes the fixed midge receives
+/// its own key; paired orbits contain 24 slots and the midge contains 12.
+fn slot_orbit(n: usize, slot: usize) -> usize {
+    let offset = slot % (n - 2) + 1;
+    offset.min(n - 1 - offset)
+}
+
+/// Return the unique orbit touched by a slot permutation, asserting that every
+/// source remains in its destination's physical orbit.
+fn map_orbit(n: usize, map: &[(usize, usize, bool)]) -> Option<usize> {
+    let mut orbit = None;
+    for &(dst, src, _) in map {
+        let dst_orbit = slot_orbit(n, dst);
+        assert_eq!(dst_orbit, slot_orbit(n, src), "wing move crossed orbits");
+        match orbit {
+            Some(existing) if existing != dst_orbit => return None,
+            None => orbit = Some(dst_orbit),
+            _ => {}
+        }
+    }
+    orbit
 }
 
 /// The two stickers of every wing slot, flattened: indices `2*i` and `2*i+1` are the
@@ -178,15 +201,23 @@ fn slot_map(sticker_perm: &[usize], slots: usize) -> Vec<(usize, usize, bool)> {
 /// slots (often a fresh pure 3-cycle at a slot-triple the raw repertoire misses). This is
 /// the same trick that cracked the last two centres, and it gives the last-edges coverage
 /// the raw conjugated 3-cycles lack.
-fn build_library(n: usize) -> Vec<WingCyc> {
+fn build_library_scope(n: usize, only_orbit: Option<usize>) -> Vec<WingCyc> {
     use super::{commutator, conjugate};
+    if !super::reduction_checkpoint() {
+        return Vec::new();
+    }
     let cells = wing_sticker_cells(n);
     let probes = build_probes(n, &cells);
     let size = CubeSize::new(n).unwrap();
     let solved = StickerCube::solved(size);
     let slots = n_slots(n);
     let nstick = cells.len();
-    let rep = wing_repertoire(n);
+    let rep: Vec<Vec<Move>> = match only_orbit {
+        Some(orbit) => wing_repertoire_for_orbit(n, orbit),
+        None => (1..=(n - 1) / 2)
+            .flat_map(|orbit| wing_repertoire_for_orbit(n, orbit))
+            .collect(),
+    };
 
     // Decode each elementary move's wing-sticker permutation once (with inverses); all
     // sequences (incl. commutators/conjugates) are composed from these — no cube clones.
@@ -240,6 +271,9 @@ fn build_library(n: usize) -> Vec<WingCyc> {
 
     // Raw repertoire (center-safe only).
     for seq in &rep {
+        if !super::reduction_checkpoint() {
+            return Vec::new();
+        }
         let mut c = solved.clone();
         apply_all(&mut c, seq);
         if centers_solved(&c) {
@@ -247,61 +281,212 @@ fn build_library(n: usize) -> Vec<WingCyc> {
         }
     }
 
-    // Meta-commutators from the shortest cycles, confined to ≤6 slots, re-aimed by face
-    // turns. (Metas/face-conjugations of center-safe cycles stay center-safe.)
-    let mut short: Vec<Vec<Move>> = by_perm.values().cloned().collect();
-    short.sort_by_key(|s| (s.len(), mv_key(s)));
-    short.truncate(120);
-    for p_seq in &short {
-        for q_seq in &short {
-            let meta = commutator(p_seq, q_seq);
-            let mp = seq_perm(&move_perms, nstick, &meta);
-            let sup = slot_map(&mp, slots).len();
-            if mp == ident || sup == 0 || sup > 6 {
-                continue;
+    // Meta-commutator seeds must not compete globally: lexical/length ordering of a
+    // shortest-120 pool starved later depths (the N=20 depth-2 normalizer regression).
+    // Select an action-diverse, overlap-connected pool independently per physical orbit.
+    #[derive(Clone)]
+    struct MetaSeed {
+        moves: Vec<Move>,
+        support: Vec<usize>,
+    }
+    let mut candidates: std::collections::BTreeMap<usize, Vec<MetaSeed>> = Default::default();
+    for (perm, moves) in &by_perm {
+        let map = slot_map(perm, slots);
+        if let Some(orbit) = map_orbit(n, &map) {
+            candidates.entry(orbit).or_default().push(MetaSeed {
+                moves: moves.clone(),
+                support: map.iter().map(|&(dst, _, _)| dst).collect(),
+            });
+        }
+    }
+    let mut short_by_orbit: std::collections::BTreeMap<usize, Vec<MetaSeed>> = Default::default();
+    for (orbit, mut pool) in candidates {
+        if !super::reduction_checkpoint() {
+            return Vec::new();
+        }
+        pool.sort_by_key(|seed| (seed.support.len(), seed.moves.len(), mv_key(&seed.moves)));
+        let mut chosen = Vec::new();
+        let mut used = vec![false; pool.len()];
+        let mut covered = std::collections::HashSet::<usize>::new();
+        let mut pairs = std::collections::HashSet::<(usize, usize)>::new();
+        while chosen.len() < 48 && chosen.len() < pool.len() {
+            let need_coverage = covered.len()
+                < if n.is_multiple_of(2) || orbit * 2 != n - 1 {
+                    24
+                } else {
+                    12
+                };
+            let best = pool
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !used[*index])
+                .max_by(|(_, a), (_, b)| {
+                    let score = |seed: &MetaSeed| {
+                        let connected = covered.is_empty()
+                            || seed.support.iter().any(|slot| covered.contains(slot));
+                        let new_slots = seed
+                            .support
+                            .iter()
+                            .filter(|slot| !covered.contains(slot))
+                            .count();
+                        let mut new_pairs = 0usize;
+                        for i in 0..seed.support.len() {
+                            for j in i + 1..seed.support.len() {
+                                let pair = if seed.support[i] < seed.support[j] {
+                                    (seed.support[i], seed.support[j])
+                                } else {
+                                    (seed.support[j], seed.support[i])
+                                };
+                                new_pairs += usize::from(!pairs.contains(&pair));
+                            }
+                        }
+                        (
+                            usize::from(!need_coverage || new_slots > 0),
+                            usize::from(connected),
+                            new_slots,
+                            new_pairs,
+                        )
+                    };
+                    score(a)
+                        .cmp(&score(b))
+                        .then_with(|| b.support.len().cmp(&a.support.len()))
+                        .then_with(|| b.moves.len().cmp(&a.moves.len()))
+                        .then_with(|| mv_key(&b.moves).cmp(&mv_key(&a.moves)))
+                });
+            let Some((index, seed)) = best else { break };
+            used[index] = true;
+            covered.extend(seed.support.iter().copied());
+            for i in 0..seed.support.len() {
+                for j in i + 1..seed.support.len() {
+                    let pair = if seed.support[i] < seed.support[j] {
+                        (seed.support[i], seed.support[j])
+                    } else {
+                        (seed.support[j], seed.support[i])
+                    };
+                    pairs.insert(pair);
+                }
             }
-            consider(&meta, &mut by_perm);
-            for ft in &face_turns {
-                consider(&conjugate(&[*ft], &meta), &mut by_perm);
+            chosen.push(seed.clone());
+        }
+        short_by_orbit.insert(orbit, chosen);
+    }
+
+    // Commutators of disjoint actions are identity, so only overlap pairs in the same
+    // orbit. Face conjugation preserves the orbit while re-aiming the small support.
+    for seeds in short_by_orbit.values() {
+        if !super::reduction_checkpoint() {
+            return Vec::new();
+        }
+        for p in seeds {
+            if !super::reduction_checkpoint() {
+                return Vec::new();
+            }
+            for q in seeds {
+                if !p.support.iter().any(|slot| q.support.contains(slot)) {
+                    continue;
+                }
+                let meta = commutator(&p.moves, &q.moves);
+                let mp = seq_perm(&move_perms, nstick, &meta);
+                let map = slot_map(&mp, slots);
+                if mp == ident || map.is_empty() || map.len() > 6 || map_orbit(n, &map).is_none() {
+                    continue;
+                }
+                consider(&meta, &mut by_perm);
+                for ft in &face_turns {
+                    consider(&conjugate(&[*ft], &meta), &mut by_perm);
+                }
             }
         }
     }
 
-    // Smallest-support first; cap the large-support (general) cycles, keep small ones all.
-    let mut raw: Vec<(usize, Vec<usize>, Vec<Move>)> = by_perm
-        .into_iter()
-        .map(|(p, m)| (slot_map(&p, slots).len(), p, m))
-        .collect();
-    raw.sort_by(|(sa, pa, ma), (sb, pb, mb)| {
-        (sa, ma.len())
-            .cmp(&(sb, mb.len()))
-            .then_with(|| pa.cmp(pb))
-            .then_with(|| mv_key(ma).cmp(&mv_key(mb)))
-    });
-    let cap_gen = 9000usize;
-    let mut ngen = 0usize;
-    let mut out = Vec::new();
-    for (sup, p, moves) in raw {
-        let map = slot_map(&p, slots);
-        if map.is_empty() {
-            continue;
-        }
-        if sup > 4 {
-            if ngen >= cap_gen {
-                continue;
-            }
-            ngen += 1;
-        }
-        let support: Vec<usize> = map.iter().map(|&(d, _, _)| d).collect();
-        let smap = map.iter().map(|&(d, s, f)| (d, (s, f))).collect();
-        out.push(WingCyc {
-            moves,
-            map,
-            support,
-            smap,
-        });
+    // Smallest-support first. Keep every <=4-slot effect. Fairly round-robin the
+    // capped 5/6+-slot general effects so low-index orbits cannot starve later ones.
+    struct RawCycle {
+        support_len: usize,
+        permutation: Vec<usize>,
+        moves: Vec<Move>,
+        map: Vec<(usize, usize, bool)>,
+        orbit: Option<usize>,
     }
-    out
+    let mut raw: Vec<RawCycle> = by_perm
+        .into_iter()
+        .map(|(permutation, moves)| {
+            let map = slot_map(&permutation, slots);
+            RawCycle {
+                support_len: map.len(),
+                orbit: map_orbit(n, &map),
+                permutation,
+                moves,
+                map,
+            }
+        })
+        .filter(|cycle| !cycle.map.is_empty())
+        .collect();
+    raw.sort_by(|a, b| {
+        (a.support_len, a.moves.len())
+            .cmp(&(b.support_len, b.moves.len()))
+            .then_with(|| a.permutation.cmp(&b.permutation))
+            .then_with(|| mv_key(&a.moves).cmp(&mv_key(&b.moves)))
+    });
+    let mut retained = Vec::new();
+    let mut general: std::collections::BTreeMap<
+        Option<usize>,
+        std::collections::VecDeque<RawCycle>,
+    > = Default::default();
+    for cycle in raw {
+        if cycle.support_len <= 4 {
+            retained.push(cycle);
+        } else {
+            general.entry(cycle.orbit).or_default().push_back(cycle);
+        }
+    }
+    let cap_gen = 9000usize;
+    let mut general_retained = 0usize;
+    while general_retained < cap_gen {
+        if !super::reduction_checkpoint() {
+            return Vec::new();
+        }
+        let mut advanced = false;
+        for cycles in general.values_mut() {
+            if general_retained >= cap_gen {
+                break;
+            }
+            if let Some(cycle) = cycles.pop_front() {
+                retained.push(cycle);
+                general_retained += 1;
+                advanced = true;
+            }
+        }
+        if !advanced {
+            break;
+        }
+    }
+
+    retained
+        .into_iter()
+        .map(|cycle| {
+            let support = cycle.map.iter().map(|&(dst, _, _)| dst).collect();
+            let smap = cycle
+                .map
+                .iter()
+                .map(|&(dst, src, flip)| (dst, (src, flip)))
+                .collect();
+            WingCyc {
+                moves: cycle.moves,
+                map: cycle.map,
+                support,
+                smap,
+            }
+        })
+        .collect()
+}
+
+fn build_library(n: usize) -> Vec<WingCyc> {
+    build_library_scope(n, None)
+}
+
+fn build_orbit_library(n: usize, orbit: usize) -> Vec<WingCyc> {
+    build_library_scope(n, Some(orbit))
 }
 
 thread_local! {
@@ -309,11 +494,35 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 fn library(n: usize) -> std::rc::Rc<Vec<WingCyc>> {
-    LIB_CACHE.with(|c| {
-        c.borrow_mut()
-            .entry(n)
-            .or_insert_with(|| std::rc::Rc::new(build_library(n)))
-            .clone()
+    LIB_CACHE.with(|cache| {
+        if let Some(existing) = cache.borrow().get(&n).cloned() {
+            return existing;
+        }
+        let built = std::rc::Rc::new(build_library(n));
+        if super::reduction_checkpoint() {
+            cache.borrow_mut().insert(n, built.clone());
+        }
+        built
+    })
+}
+
+type CachedLibrary = std::rc::Rc<Vec<WingCyc>>;
+type OrbitLibraryCache = std::collections::HashMap<(usize, usize), CachedLibrary>;
+
+thread_local! {
+    static ORBIT_LIB_CACHE: std::cell::RefCell<OrbitLibraryCache> = Default::default();
+}
+
+fn orbit_library(n: usize, orbit: usize) -> CachedLibrary {
+    ORBIT_LIB_CACHE.with(|cache| {
+        if let Some(existing) = cache.borrow().get(&(n, orbit)).cloned() {
+            return existing;
+        }
+        let built = std::rc::Rc::new(build_orbit_library(n, orbit));
+        if super::reduction_checkpoint() {
+            cache.borrow_mut().insert((n, orbit), built.clone());
+        }
+        built
     })
 }
 
@@ -470,7 +679,7 @@ fn search_bridge_e(
         budget: &mut i64,
         path: &mut Vec<Move>,
     ) -> bool {
-        if *budget <= 0 || depth >= maxd {
+        if *budget <= 0 || depth >= maxd || !super::reduction_checkpoint() {
             return false;
         }
         let empty: Vec<&WingCyc> = Vec::new();
@@ -538,11 +747,25 @@ fn search_bridge_e(
 /// a permutation-*predicted* two-cycle bridge (composes slot maps, no cube clone, so it
 /// scans the whole library cheaply).
 pub fn solve_edges(cube: &mut StickerCube) -> Vec<Move> {
+    solve_edges_with_stall(cube).moves
+}
+
+pub(crate) struct EdgeSolveOutcome {
+    pub moves: Vec<Move>,
+    /// First slot the bounded placement repertoire could not fix. This is a
+    /// coverage diagnostic, not by itself an algebraic parity certificate.
+    pub stalled_slot: Option<usize>,
+}
+
+pub(crate) fn solve_edges_with_stall(cube: &mut StickerCube) -> EdgeSolveOutcome {
     let n = cube.size().get();
     if n <= 3 {
-        return Vec::new();
+        return EdgeSolveOutcome {
+            moves: Vec::new(),
+            stalled_slot: None,
+        };
     }
-    solve_to_target(cube, &home_targets(n))
+    solve_to_target_outcome(cube, &home_targets(n))
 }
 
 /// The home oriented pair of every wing slot, in slot order.
@@ -572,16 +795,91 @@ pub(crate) fn at_target(cube: &StickerCube, target: &[(Color, Color)]) -> bool {
     (0..target.len()).all(|i| cur_pair(cube, &cells, i) == target[i])
 }
 
+/// Ordered sticker pairs of one mirrored 24-wing orbit, in edge-major order
+/// with the near-depth slot followed by its mirror. This scans exactly 24 slots.
+pub(crate) fn orbit_pairs(cube: &StickerCube, depth: usize) -> Vec<(Color, Color)> {
+    let n = cube.size().get();
+    let mut pairs = Vec::with_capacity(24);
+    for edge in 0..12 {
+        for offset in [depth, n - 1 - depth] {
+            let (a, b) = super::edges::wing_cells(edge, offset, n);
+            pairs.push((
+                cube.color_at(a.0, a.1, a.2).unwrap(),
+                cube.color_at(b.0, b.1, b.2).unwrap(),
+            ));
+        }
+    }
+    pairs
+}
+
+pub(crate) fn home_orbit_pairs(n: usize) -> Vec<(Color, Color)> {
+    (0..12)
+        .flat_map(|edge| [home_pair(n, edge * (n - 2)); 2])
+        .collect()
+}
+
+/// Exact sticker-visible equality for one wing orbit; no move library or hidden
+/// cubie labels are involved.
+pub(crate) fn orbit_matches_pairs(
+    cube: &StickerCube,
+    depth: usize,
+    expected: &[(Color, Color)],
+) -> bool {
+    expected.len() == 24 && orbit_pairs(cube, depth) == expected
+}
+
 /// Like `solve_edges`, but drives every wing slot to an arbitrary per-slot oriented pair
 /// `target` (not necessarily home). Used to place two edges *swapped*, which flips the
 /// dedge-permutation parity to clear the odd-corner PLL case on even cubes.
 pub(crate) fn solve_to_target(cube: &mut StickerCube, target: &[(Color, Color)]) -> Vec<Move> {
+    solve_to_target_outcome(cube, target).moves
+}
+
+/// Normalize one 24-wing orbit toward 24 desired ordered sticker pairs while
+/// asking every other slot to retain its current ordered color pair.
+/// A stall means the bounded normalizer lacked coverage; callers must not label
+/// that result parity unless an alternate canonical form is reached exactly.
+pub(crate) fn solve_orbit_to_pairs(
+    cube: &mut StickerCube,
+    depth: usize,
+    desired: &[(Color, Color)],
+) -> EdgeSolveOutcome {
+    assert_eq!(desired.len(), 24);
+    let n = cube.size().get();
+    let cells = wing_sticker_cells(n);
+    let mut target: Vec<(Color, Color)> = (0..n_slots(n))
+        .map(|slot| cur_pair(cube, &cells, slot))
+        .collect();
+    let mut index = 0usize;
+    for edge in 0..12 {
+        for offset in [depth, n - 1 - depth] {
+            let slot = edge * (n - 2) + offset - 1;
+            target[slot] = desired[index];
+            index += 1;
+        }
+    }
+    let lib = orbit_library(n, depth);
+    solve_to_target_outcome_with_library(cube, &target, lib)
+}
+
+fn solve_to_target_outcome(cube: &mut StickerCube, target: &[(Color, Color)]) -> EdgeSolveOutcome {
+    let lib = library(cube.size().get());
+    solve_to_target_outcome_with_library(cube, target, lib)
+}
+
+fn solve_to_target_outcome_with_library(
+    cube: &mut StickerCube,
+    target: &[(Color, Color)],
+    lib: std::rc::Rc<Vec<WingCyc>>,
+) -> EdgeSolveOutcome {
     let n = cube.size().get();
     let mut moves = Vec::new();
     if n <= 3 {
-        return moves;
+        return EdgeSolveOutcome {
+            moves,
+            stalled_slot: None,
+        };
     }
-    let lib = library(n);
     let cells = wing_sticker_cells(n);
     let slots = n_slots(n);
     let home: &[(Color, Color)] = target;
@@ -598,6 +896,12 @@ pub(crate) fn solve_to_target(cube: &mut StickerCube, target: &[(Color, Color)])
     let correct = |cube: &StickerCube, i: usize| pair(cube, i) == home[i];
 
     while let Some(t) = (0..slots).find(|&i| !correct(cube, i)) {
+        if !super::reduction_checkpoint() {
+            return EdgeSolveOutcome {
+                moves,
+                stalled_slot: Some(t),
+            };
+        }
         // 1) Direct placement: a cycle that lands `home[t]` (accounting for its flip)
         // at `t` from a non-correct reservoir slot, disturbing nothing already correct.
         let mut placed = false;
@@ -663,11 +967,17 @@ pub(crate) fn solve_to_target(cube: &mut StickerCube, target: &[(Color, Color)])
             continue;
         }
 
-        // A genuine stall: odd wing parity (no even cycle sequence fixes it). The caller
-        // clears it by toggling wing parity with an inner slice and re-reducing.
-        return moves;
+        // Bounded coverage stall. The exact slot is useful for diagnostics, but
+        // does not prove that this orbit has a sticker-visible parity defect.
+        return EdgeSolveOutcome {
+            moves,
+            stalled_slot: Some(t),
+        };
     }
-    moves
+    EdgeSolveOutcome {
+        moves,
+        stalled_slot: None,
+    }
 }
 
 #[cfg(test)]
@@ -681,6 +991,57 @@ mod tests {
     /// The slot (src,flip) map must match what the cube actually does: applying a
     /// cycle to a solved cube, slot `dst` ends up showing the home colours of `src`
     /// (reversed iff flipped).
+    #[test]
+    fn cancelled_build_does_not_poison_edge_caches() {
+        let control = crate::reduction::ReductionControl::unlimited();
+        control.cancel();
+        crate::reduction::with_reduction_control(&control, || {
+            assert!(library(127).is_empty());
+            assert!(orbit_library(127, 17).is_empty());
+        });
+        LIB_CACHE.with(|cache| assert!(!cache.borrow().contains_key(&127)));
+        ORBIT_LIB_CACHE.with(|cache| assert!(!cache.borrow().contains_key(&(127, 17))));
+    }
+
+    #[test]
+    #[ignore = "orbit-stratified library structural gate; run explicitly in release mode"]
+    fn localized_transport_graph_reaches_every_n6_orbit_slot() {
+        let n = 6usize;
+        let lib = build_library(n);
+        for cycle in &lib {
+            for &(dst, src, _) in &cycle.map {
+                assert_eq!(slot_orbit(n, dst), slot_orbit(n, src));
+            }
+        }
+        for orbit in 1..=(n - 2) / 2 {
+            let expected: std::collections::HashSet<usize> = (0..n_slots(n))
+                .filter(|&slot| slot_orbit(n, slot) == orbit)
+                .collect();
+            assert_eq!(expected.len(), 24);
+            let mut adjacency: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+            for cycle in &lib {
+                if cycle.support.len() > 6 || map_orbit(n, &cycle.map) != Some(orbit) {
+                    continue;
+                }
+                for &(dst, src, _) in &cycle.map {
+                    adjacency.entry(dst).or_default().push(src);
+                    adjacency.entry(src).or_default().push(dst);
+                }
+            }
+            let start = *expected.iter().next().unwrap();
+            let mut reached = std::collections::HashSet::from([start]);
+            let mut pending = vec![start];
+            while let Some(slot) = pending.pop() {
+                for &next in adjacency.get(&slot).unwrap_or(&Vec::new()) {
+                    if reached.insert(next) {
+                        pending.push(next);
+                    }
+                }
+            }
+            assert_eq!(reached, expected, "disconnected localized orbit {orbit}");
+        }
+    }
+
     #[test]
     fn slot_map_is_correct() {
         for n in [4usize, 5] {

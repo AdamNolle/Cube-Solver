@@ -108,8 +108,8 @@ fn load_icon() -> egui::IconData {
 }
 
 enum LabMessage {
-    Event(WorkerEvent),
-    Finished(SolverRun),
+    Event(u64, WorkerEvent),
+    Finished(u64, SolverRun),
 }
 
 struct SolverLabApp {
@@ -125,6 +125,7 @@ struct SolverLabApp {
     events: Vec<WorkerEvent>,
     best: Option<SolutionCandidate>,
     solving: bool,
+    solve_job: u64,
     rx: Option<mpsc::Receiver<LabMessage>>,
     replaying: bool,
     replay_step: usize,
@@ -161,6 +162,7 @@ impl SolverLabApp {
             events: Vec::new(),
             best: None,
             solving: false,
+            solve_job: 0,
             rx: None,
             replaying: false,
             replay_step: 0,
@@ -232,6 +234,12 @@ impl SolverLabApp {
     fn generate_challenge(&mut self) {
         self.replaying = false;
         self.active_replay_turn = None;
+        // Invalidate and disconnect any solver for the previous challenge. The
+        // worker may finish in the background, but its tagged result can no
+        // longer be attached to or persisted against the replacement state.
+        self.solve_job = self.solve_job.wrapping_add(1);
+        self.solving = false;
+        self.rx = None;
         let Ok(size) = CubeSize::new(self.cube_size) else {
             self.status = "Cube size must be at least 2".to_string();
             return;
@@ -320,6 +328,8 @@ impl SolverLabApp {
             max_wide: self.max_layer_span.max(1),
             ..SolverBudget::for_depth(self.solve_depth)
         };
+        self.solve_job = self.solve_job.wrapping_add(1);
+        let job = self.solve_job;
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
         self.events.clear();
@@ -332,9 +342,9 @@ impl SolverLabApp {
         thread::spawn(move || {
             let event_tx = tx.clone();
             let run = run_solver_lab_observed(snapshot, budget, |event| {
-                let _ = event_tx.send(LabMessage::Event(event.clone()));
+                let _ = event_tx.send(LabMessage::Event(job, event.clone()));
             });
-            let _ = tx.send(LabMessage::Finished(run));
+            let _ = tx.send(LabMessage::Finished(job, run));
         });
     }
 
@@ -345,7 +355,10 @@ impl SolverLabApp {
         let mut keep_rx = true;
         while let Ok(message) = rx.try_recv() {
             match message {
-                LabMessage::Event(event) => {
+                LabMessage::Event(job, event) => {
+                    if job != self.solve_job {
+                        continue;
+                    }
                     if let Some(candidate) = &event.candidate {
                         let better = self
                             .best
@@ -364,7 +377,10 @@ impl SolverLabApp {
                         self.events.drain(0..100);
                     }
                 }
-                LabMessage::Finished(run) => {
+                LabMessage::Finished(job, run) => {
+                    if job != self.solve_job {
+                        continue;
+                    }
                     self.solving = false;
                     self.best = run.best.clone().or_else(|| self.best.clone());
                     self.status = if let Some(best) = &self.best {

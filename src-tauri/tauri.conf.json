@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Cube Solver",
   "version": "0.1.0",
-  "identifier": "dev.cubesolver.app",
+  "identifier": "io.github.adamnolle.cubesolver",
   "build": {
     "frontendDist": "../web",
     "beforeBuildCommand": "wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm || wasm-pack build ../crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm"
@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:"
     }
   },
   "bundle": {

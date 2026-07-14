@@ -72,4 +72,4 @@ jobs:
           name: cube-solver-${{ matrix.os }}
           path: |
             src-tauri/target/release/bundle/**
-          if-no-files-found: warn
+          if-no-files-found: error

@@ -8,26 +8,34 @@
 <body>
 <x-dc>
 <helmet>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;background:#ECEBE6}
 button{font-family:inherit;cursor:pointer;border:none;background:none}
+button:focus-visible,input:focus-visible{outline:3px solid #1573E6;outline-offset:3px}
+button:disabled{cursor:not-allowed;opacity:.42}
 ::-webkit-scrollbar{width:11px;height:11px}
 ::-webkit-scrollbar-thumb{background:#dad7d0;border-radius:9px;border:3px solid transparent;background-clip:padding-box}
 ::-webkit-scrollbar-thumb:hover{background:#c8c4bb}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes pop{0%{transform:scale(.4);opacity:0}55%{transform:scale(1.12)}100%{transform:scale(1);opacity:1}}
 @keyframes fadein{from{opacity:0}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.001ms!important}}
+@media (max-width:900px){
+  .app-shell{height:auto!important;min-height:100vh;overflow:auto!important}
+  .topbar{height:auto!important;min-height:62px;flex-wrap:wrap;gap:8px;padding:10px 14px!important}
+  .main-area{min-height:0;overflow:visible}
+  .studio-layout{height:auto!important;min-height:calc(100vh - 82px);flex-direction:column}
+  .cube-viewport{min-height:55vh}
+  .control-rail{width:100%!important;overflow:visible!important}
+}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </helmet>
-<div ref="{{ rootRef }}" style="height:100vh;display:flex;flex-direction:column;overflow:hidden;font-family:'Schibsted Grotesk',system-ui,sans-serif;color:#1A1A18;background:radial-gradient(130% 120% at 50% -10%, #FCFCFA 0%, #F2F1ED 62%, #E9E8E2 100%);-webkit-font-smoothing:antialiased;">
+<div ref="{{ rootRef }}" class="app-shell" style="height:100vh;display:flex;flex-direction:column;overflow:hidden;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#1A1A18;background:radial-gradient(130% 120% at 50% -10%, #FCFCFA 0%, #F2F1ED 62%, #E9E8E2 100%);-webkit-font-smoothing:antialiased;">
 
   <!-- TOP BAR -->
-  <div style="height:62px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 22px;border-bottom:1px solid rgba(20,20,18,.06);">
+  <header class="topbar" style="height:62px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 22px;border-bottom:1px solid rgba(20,20,18,.06);">
     <div style="display:flex;align-items:center;gap:11px;">
       <svg width="26" height="26" viewBox="0 0 26 26" fill="none"><path d="M13 2 22.5 7v12L13 24 3.5 19V7L13 2Z" fill="#161514"/><path d="M13 2 22.5 7 13 12 3.5 7 13 2Z" fill="#E0243C"/><path d="M13 12 22.5 7v12L13 24V12Z" fill="#1573E6"/><path d="M13 12 3.5 7v12L13 24V12Z" fill="#1BA64B"/></svg>
       <div style="display:flex;flex-direction:column;line-height:1.05;">
@@ -35,27 +43,27 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
         <span style="font-size:10.5px;color:#A6A299;letter-spacing:.02em;">N×N solver studio</span>
       </div>
     </div>
-    <div style="display:flex;background:#EDEBE5;border-radius:11px;padding:3px;gap:2px;">
-      <button data-view="studio" onClick="{{ onViewClick }}" style="padding:7px 17px;border-radius:8px;font-size:13px;font-weight:500;color:#8C887F;transition:.18s;">Studio</button>
-      <button data-view="swarm" onClick="{{ onViewClick }}" style="padding:7px 17px;border-radius:8px;font-size:13px;font-weight:500;color:#8C887F;transition:.18s;">Swarm</button>
-    </div>
+    <nav role="tablist" aria-label="Workspace" style="display:flex;background:#EDEBE5;border-radius:11px;padding:3px;gap:2px;">
+      <button id="studio-tab" role="tab" aria-controls="studio-panel" data-view="studio" onClick="{{ onViewClick }}" style="padding:7px 17px;border-radius:8px;font-size:13px;font-weight:500;color:#8C887F;transition:.18s;">Studio</button>
+      <button id="swarm-tab" role="tab" aria-controls="swarm-panel" data-view="swarm" onClick="{{ onViewClick }}" style="padding:7px 17px;border-radius:8px;font-size:13px;font-weight:500;color:#8C887F;transition:.18s;">Swarm</button>
+    </nav>
     <div style="display:flex;align-items:center;gap:14px;">
-      <button data-spin onClick="{{ onSpinToggle }}" style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8C887F;padding:6px 8px;border-radius:8px;">
+      <button data-spin aria-pressed="true" aria-label="Toggle automatic cube orbit" onClick="{{ onSpinToggle }}" style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8C887F;padding:6px 8px;border-radius:8px;">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>
         Auto-orbit
       </button>
-      <span style="font-size:11px;color:#B7B3AA;padding:5px 10px;border:1px solid rgba(20,20,18,.08);border-radius:20px;">Simulated demo</span>
+      <span style="font-size:11px;color:#B7B3AA;padding:5px 10px;border:1px solid rgba(20,20,18,.08);border-radius:20px;">Real Rust/WASM</span>
     </div>
-  </div>
+  </header>
 
   <!-- MAIN -->
-  <div style="flex:1;position:relative;min-height:0;">
+  <main class="main-area" style="flex:1;position:relative;min-height:0;">
 
     <!-- ===== STUDIO ===== -->
-    <div data-id="studio" style="display:flex;height:100%;gap:16px;padding:16px;">
+    <div id="studio-panel" role="tabpanel" aria-labelledby="studio-tab" data-id="studio" class="studio-layout" style="display:flex;height:100%;gap:16px;padding:16px;">
 
       <!-- viewport -->
-      <div style="flex:1;min-width:0;position:relative;background:linear-gradient(180deg,#FFFFFF 0%,#FBFBF9 100%);border:1px solid #ECEAE4;border-radius:22px;box-shadow:0 1px 2px rgba(20,20,18,.04),0 22px 48px -26px rgba(20,20,18,.16);overflow:hidden;">
+      <div class="cube-viewport" aria-label="Interactive cube viewport" style="flex:1;min-width:0;position:relative;background:linear-gradient(180deg,#FFFFFF 0%,#FBFBF9 100%);border:1px solid #ECEAE4;border-radius:22px;box-shadow:0 1px 2px rgba(20,20,18,.04),0 22px 48px -26px rgba(20,20,18,.16);overflow:hidden;">
         <div data-stage style="position:absolute;inset:0;"></div>
 
         <!-- top-left badges -->
@@ -85,19 +93,19 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
 
         <!-- HUD bottom-center -->
         <div style="position:absolute;bottom:26px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:11px;pointer-events:none;background:rgba(255,255,255,.88);backdrop-filter:blur(8px);border:1px solid rgba(20,20,18,.07);border-radius:24px;padding:6px 7px 6px 15px;box-shadow:0 8px 22px -12px rgba(20,20,18,.3);">
-          <span data-status style="font-size:12.5px;color:#6E6A61;">Solved — scramble to begin</span>
+          <span data-status role="status" aria-live="polite" style="font-size:12.5px;color:#6E6A61;">Solved — scramble to begin</span>
           <span data-move style="font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:600;color:#161514;min-width:30px;text-align:center;display:none;"></span>
           <span data-count style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#fff;background:#161514;padding:6px 11px;border-radius:18px;display:none;">0 / 0</span>
         </div>
 
         <!-- solve progress bar -->
         <div style="position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(20,20,18,.06);">
-          <div data-progress style="height:100%;width:100%;background:#161514;transition:width .12s linear;"></div>
+          <div data-progress role="progressbar" aria-label="Solve progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" style="height:100%;width:100%;background:#161514;transition:width .12s linear;"></div>
         </div>
       </div>
 
       <!-- rail -->
-      <div style="width:368px;flex:none;overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding-right:2px;">
+      <aside class="control-rail" aria-label="Cube controls" style="width:368px;flex:none;overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding-right:2px;">
 
         <!-- config card -->
         <div style="background:#fff;border:1px solid #ECEAE4;border-radius:18px;box-shadow:0 1px 2px rgba(20,20,18,.04);padding:18px;">
@@ -120,7 +128,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
           </div>
 
           <div style="display:flex;align-items:center;gap:11px;margin-top:13px;">
-            <input data-nslider type="range" min="0" max="1000" step="1" onChange="{{ onNSlider }}" style="flex:1;accent-color:#161514;height:4px;cursor:pointer;">
+            <input data-nslider aria-label="Cube size" type="range" min="0" max="1000" step="1" onChange="{{ onNSlider }}" style="flex:1;accent-color:#161514;height:4px;cursor:pointer;">
             <span data-nval style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:#161514;min-width:64px;text-align:right;">3×3</span>
           </div>
           <div style="display:flex;gap:6px;margin-top:11px;">
@@ -130,7 +138,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
             <button data-n="500" onClick="{{ onNClick }}" style="flex:1;height:30px;border-radius:9px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;background:#F4F3EF;color:#6E6A61;transition:.16s;">500</button>
             <button data-n="1000" onClick="{{ onNClick }}" style="flex:1;height:30px;border-radius:9px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;background:#F4F3EF;color:#6E6A61;transition:.16s;">1000</button>
           </div>
-          <div style="font-size:11px;color:#B7B3AA;margin-top:9px;line-height:1.45;">Renders any size. Past 11³ the faces are sampled — exactly how the real solver handles giant cubes.</div>
+          <div style="font-size:11px;color:#B7B3AA;margin-top:9px;line-height:1.45;">2–11 solve with verified engines. Larger sizes are sampled visualization while arbitrary-N research continues.</div>
 
           <div style="height:1px;background:#F1EFEA;margin:16px 0;"></div>
 
@@ -138,7 +146,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
             <span style="font-size:11px;font-weight:600;letter-spacing:.09em;color:#A6A299;">SCRAMBLE DEPTH</span>
             <span data-scramble-val style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;color:#161514;">20</span>
           </div>
-          <input data-scramble type="range" min="4" max="40" step="1" onChange="{{ onScrambleInput }}" style="width:100%;accent-color:#161514;height:4px;cursor:pointer;">
+          <input data-scramble aria-label="Scramble depth" type="range" min="4" max="40" step="1" onChange="{{ onScrambleInput }}" style="width:100%;accent-color:#161514;height:4px;cursor:pointer;">
 
           <div style="height:1px;background:#F1EFEA;margin:16px 0;"></div>
 
@@ -174,8 +182,8 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
         <!-- solver race -->
         <div style="background:#fff;border:1px solid #ECEAE4;border-radius:18px;box-shadow:0 1px 2px rgba(20,20,18,.04);padding:18px;">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:15px;">
-            <span style="font-size:11px;font-weight:600;letter-spacing:.09em;color:#A6A299;">SOLVER RACE</span>
-            <span style="font-size:11px;color:#B7B3AA;">3 strategies, in parallel</span>
+            <span data-race-head style="font-size:11px;font-weight:600;letter-spacing:.09em;color:#A6A299;">SOLVER RACE</span>
+            <span data-race-sub style="font-size:11px;color:#B7B3AA;">Adaptive verified solver</span>
           </div>
 
           <div data-lane="det" style="margin-bottom:15px;">
@@ -232,11 +240,11 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
           </div>
         </div>
 
-      </div>
+      </aside>
     </div>
 
     <!-- ===== SWARM ===== -->
-    <div data-id="swarm" style="display:none;height:100%;flex-direction:column;padding:18px 20px;">
+    <div id="swarm-panel" role="tabpanel" aria-labelledby="swarm-tab" data-id="swarm" style="display:none;height:100%;flex-direction:column;padding:18px 20px;">
       <div style="flex:none;display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:14px;">
         <div style="display:flex;align-items:center;gap:26px;">
           <div style="display:flex;flex-direction:column;line-height:1;">
@@ -268,7 +276,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
       <div data-swarm style="flex:1;overflow-y:auto;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));align-content:start;justify-content:center;padding-bottom:4px;"></div>
     </div>
 
-  </div>
+  </main>
 </div>
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:&quot;100%&quot;,&quot;height&quot;:&quot;100%&quot;},&quot;autoSpin&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;accent&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#161514&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;palette&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Classic&quot;,&quot;Vivid&quot;,&quot;Pastel&quot;],&quot;default&quot;:&quot;Classic&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
@@ -312,7 +320,8 @@ class Component extends DCLogic {
     this.scrambleDepth = 20;
     this.speedDur = 0.52;
     this.view = 'studio';
-    this.autoSpin = this.props.autoSpin !== false;
+    this.reducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    this.autoSpin = this.props.autoSpin !== false && !this.reducedMotion;
     this.swarmCount = 64;
     this.swarmSpeed = 1.0;
     this.accent = this.props.accent || '#161514';
@@ -347,10 +356,26 @@ class Component extends DCLogic {
     boot();
 
     window.addEventListener('keydown', this.onKey = (e) => {
-      if (e.target.tagName === 'INPUT') return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target;
+      if (target && (target.isContentEditable || ['INPUT','BUTTON','SELECT','TEXTAREA'].includes(target.tagName))) return;
       if (e.code === 'Space') { e.preventDefault(); this.scrambled ? this.solve() : this.scramble(); }
       else if (e.key === 's' || e.key === 'S') this.scramble();
       else if (e.key === 'r' || e.key === 'R') this.replay();
+    });
+    this.root.addEventListener('keydown', this.onTabKey = (e) => {
+      if (!e.target || e.target.getAttribute('role') !== 'tab') return;
+      const tabs = this.qa('[role="tab"]');
+      const current = tabs.indexOf(e.target);
+      let next = current;
+      if (e.key === 'ArrowRight') next = (current + 1) % tabs.length;
+      else if (e.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+      else if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = tabs.length - 1;
+      else return;
+      e.preventDefault();
+      this.setView(tabs[next].dataset.view);
+      tabs[next].focus();
     });
   }
 
@@ -797,7 +822,11 @@ class Component extends DCLogic {
     f = Math.max(0, Math.min(1, f));
     this.ui.ring.setAttribute('stroke-dashoffset', this.ringCirc * (1 - f));
     this.ui.pct.textContent = Math.round(f * 100);
-    if (this.ui.progress) this.ui.progress.style.width = (f * 100) + '%';
+    if (this.ui.progress) {
+      const pct = Math.round(f * 100);
+      this.ui.progress.style.width = pct + '%';
+      this.ui.progress.setAttribute('aria-valuenow', String(pct));
+    }
   }
 
   notation(m) {
@@ -900,8 +929,14 @@ class Component extends DCLogic {
   setView(v) {
     this.view = v;
     this.ui.studio.style.display = v === 'studio' ? 'flex' : 'none';
+    this.ui.studio.hidden = v !== 'studio';
     this.ui.swarmView.style.display = v === 'swarm' ? 'flex' : 'none';
+    this.ui.swarmView.hidden = v !== 'swarm';
     if (v === 'studio') setTimeout(() => this.resize(), 30);
+    // A solved Studio cube gives the swarm nothing to learn (every trial is instantly
+    // solved and the wall is all green). Auto-scramble on entry so the swarm immediately
+    // shows the agents actually learning to solve.
+    if (v === 'swarm' && !this.scrambled && !this.busy) this.scramble();
     this.syncControls();
   }
   // Logarithmic size slider: position 0..1000 maps to size 2..100000, so the slider gives
@@ -928,12 +963,15 @@ class Component extends DCLogic {
       b.style.background = on ? '#fff' : 'transparent';
       b.style.color = on ? '#161514' : '#8C887F';
       b.style.boxShadow = on ? '0 1px 3px rgba(20,20,18,.12)' : 'none';
+      b.setAttribute('aria-selected', String(on));
+      b.tabIndex = on ? 0 : -1;
     });
     // N presets
     this.qa('[data-n]').forEach(b => {
       const on = parseInt(b.dataset.n, 10) === this.n;
       b.style.background = on ? '#161514' : '#F4F3EF';
       b.style.color = on ? '#fff' : '#6E6A61';
+      b.setAttribute('aria-pressed', String(on));
     });
     const nsl = this.q('[data-nslider]'); if (nsl) nsl.value = this.nToSlider(this.n);
     const nv = this.q('[data-nval]'); if (nv) nv.textContent = `${this.n}×${this.n}`;
@@ -943,6 +981,7 @@ class Component extends DCLogic {
       b.style.background = on ? '#fff' : 'transparent';
       b.style.color = on ? '#161514' : '#8C887F';
       b.style.boxShadow = on ? '0 1px 3px rgba(20,20,18,.1)' : 'none';
+      b.setAttribute('aria-pressed', String(on));
     });
     // swarm count + speed
     this.qa('[data-count]').forEach(b => {
@@ -950,18 +989,27 @@ class Component extends DCLogic {
       b.style.background = on ? '#fff' : 'transparent';
       b.style.color = on ? '#161514' : '#8C887F';
       b.style.boxShadow = on ? '0 1px 3px rgba(20,20,18,.1)' : 'none';
+      b.setAttribute('aria-pressed', String(on));
     });
     this.qa('[data-sspeed]').forEach(b => {
       const on = (b.dataset.sspeed === 'lively') === (this.swarmSpeed > 1.5);
       b.style.background = on ? '#fff' : 'transparent';
       b.style.color = on ? '#161514' : '#8C887F';
       b.style.boxShadow = on ? '0 1px 3px rgba(20,20,18,.1)' : 'none';
+      b.setAttribute('aria-pressed', String(on));
     });
     // spin toggle
     const spin = this.q('[data-spin]');
     spin.style.color = this.autoSpin ? '#161514' : '#B7B3AA';
+    spin.setAttribute('aria-pressed', String(this.autoSpin));
     // buttons enable
-    const dis = (el, off) => { if (!el) return; el.style.opacity = off ? '.4' : '1'; el.style.pointerEvents = off ? 'none' : 'auto'; };
+    const dis = (el, off) => {
+      if (!el) return;
+      el.disabled = !!off;
+      el.setAttribute('aria-disabled', String(!!off));
+      el.style.opacity = off ? '.4' : '1';
+      el.style.pointerEvents = off ? 'none' : 'auto';
+    };
     dis(this.q('[data-act-scramble]'), this.busy);
     dis(this.q('[data-act-solve]'), this.busy || !this.scrambled);
     dis(this.q('[data-act-replay]'), this.busy || this.lastScramble.length === 0);
@@ -1037,8 +1085,10 @@ class Component extends DCLogic {
     let solvingNow = 0, progSum = 0;
     const g = this.swarmSpeed;
     for (const c of this.cards) {
-      c.rot += dt * c.spin;
-      if (c.inner) c.inner.style.transform = `rotateX(-20deg) rotateY(${c.rot}deg)`;
+      if (!this.reducedMotion) {
+        c.rot += dt * c.spin;
+        if (c.inner) c.inner.style.transform = `rotateX(-20deg) rotateY(${c.rot}deg)`;
+      }
       if (c.delay > 0) { c.delay -= dt; solvingNow++; continue; }
       if (c.state === 'run') {
         solvingNow++;
@@ -1139,6 +1189,7 @@ class Component extends DCLogic {
     if (this._raf) cancelAnimationFrame(this._raf);
     if (this.ro) this.ro.disconnect();
     if (this.onKey) window.removeEventListener('keydown', this.onKey);
+    if (this.onTabKey && this.root) this.root.removeEventListener('keydown', this.onTabKey);
   }
 }
 </script>

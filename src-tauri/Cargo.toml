@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Cube Solver — N×N cube solver studio"
 authors = ["Adam Nolle"]
 edition = "2021"
+license = "MIT"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

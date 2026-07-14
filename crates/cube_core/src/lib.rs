@@ -2,7 +2,7 @@
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use thiserror::Error;
@@ -11,6 +11,8 @@ use thiserror::Error;
 pub enum CubeError {
     #[error("cube size must be at least 2, got {0}")]
     InvalidSize(usize),
+    #[error("cube size {0} is too large to represent 6·N² stickers")]
+    SizeTooLarge(usize),
     #[error("layer range {start}..={end} is outside cube size {size}")]
     LayerOutOfBounds {
         start: usize,
@@ -33,13 +35,30 @@ pub enum CubeError {
     InvalidLayerSpan,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct CubeSize(usize);
+
+impl<'de> Deserialize<'de> for CubeSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let size = usize::deserialize(deserializer)?;
+        Self::new(size).map_err(serde::de::Error::custom)
+    }
+}
 
 impl CubeSize {
     pub fn new(size: usize) -> Result<Self, CubeError> {
         if size < 2 {
             return Err(CubeError::InvalidSize(size));
+        }
+        if size
+            .checked_mul(size)
+            .and_then(|n2| n2.checked_mul(6))
+            .is_none()
+        {
+            return Err(CubeError::SizeTooLarge(size));
         }
         Ok(Self(size))
     }
@@ -457,7 +476,7 @@ impl StickerCube {
     fn apply_positive_quarter_turn(&mut self, mv: Move) {
         let n = self.size.get();
         let mut writes: Vec<(usize, Color)> =
-            Vec::with_capacity(affected_estimate(mv.layer_count(), n));
+            Vec::with_capacity(affected_estimate(mv.layer_start, mv.layer_end, n));
 
         for face in Face::ALL {
             let Some((row_lo, row_hi, col_lo, col_hi)) =
@@ -516,9 +535,13 @@ impl StickerCube {
     }
 }
 
-fn affected_estimate(layer_count: usize, n: usize) -> usize {
-    // 4 side bands of width `layer_count` plus up to 2 full cap faces.
-    4 * layer_count * n + 2 * n * n
+fn affected_estimate(start: usize, end: usize, n: usize) -> usize {
+    let layer_count = end - start + 1;
+    // Four side bands are always touched. A full cap face is touched only when
+    // the selected range includes that outer layer; reserving both caps for an
+    // inner slice turned an O(N) operation into an O(N²) allocation.
+    let cap_count = usize::from(start == 0) + usize::from(end == n - 1);
+    4 * layer_count * n + cap_count * n * n
 }
 
 /// How a face's along-axis layer value depends on its (row, col): a constant
@@ -774,6 +797,24 @@ mod fast_rotation_tests {
             fast.stickers, reference.stickers,
             "fast != reference for {mv:?}"
         );
+    }
+
+    #[test]
+    fn cube_size_rejects_sticker_count_overflow() {
+        assert_eq!(
+            CubeSize::new(usize::MAX),
+            Err(CubeError::SizeTooLarge(usize::MAX))
+        );
+        let encoded = usize::MAX.to_string();
+        assert!(serde_json::from_str::<CubeSize>(&encoded).is_err());
+    }
+
+    #[test]
+    fn inner_slice_reservation_scales_linearly() {
+        let n = 2_000;
+        assert_eq!(affected_estimate(1, 1, n), 4 * n);
+        assert_eq!(affected_estimate(0, 0, n), 4 * n + n * n);
+        assert_eq!(affected_estimate(0, n - 1, n), 6 * n * n);
     }
 
     #[test]

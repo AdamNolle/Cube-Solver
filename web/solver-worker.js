@@ -1,7 +1,7 @@
 // Off-main-thread solver: keeps the UI responsive and lets a long/hard solve be
 // cancelled (the main thread just terminates this worker). Posts a "ready" ping
-// once the wasm is loaded so the page knows the worker is usable; otherwise the
-// page falls back to a bounded main-thread solve.
+// once WASM loads. Only 2×2/3×3 may use a bounded main-thread fallback; reduction
+// remains worker-only so it can never freeze the UI thread.
 import init, { CubeLab, warm_solver } from './pkg/cube_wasm.js';
 
 init()
@@ -22,9 +22,11 @@ self.onmessage = (e) => {
   if (d.type !== 'solve') return;
   try {
     const lab = new CubeLab(d.n);
-    for (const m of d.moves || []) lab.apply_design_move(m.axis, m.layer, m.dir);
-    self.postMessage({ type: 'result', ok: true, result: lab.solve(Math.min(d.depth, 9), d.time) });
+    if (!d.colors || !lab.load_face_colors(d.colors)) {
+      throw new Error('invalid or incomplete sticker state');
+    }
+    self.postMessage({ type: 'result', jobId: d.jobId, ok: true, result: lab.solve(Math.min(d.depth, 9), d.time) });
   } catch (err) {
-    self.postMessage({ type: 'result', ok: false, error: String(err && err.message ? err.message : err) });
+    self.postMessage({ type: 'result', jobId: d.jobId, ok: false, error: String(err && err.message ? err.message : err) });
   }
 };

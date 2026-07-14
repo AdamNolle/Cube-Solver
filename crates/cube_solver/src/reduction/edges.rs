@@ -104,10 +104,10 @@ fn lcg(state: &mut u64) -> u64 {
 /// Center-safe pure wing 3-cycles: `[Sy_d, f U f']` (an inner Y-slice commutated
 /// with a face-shifted U turn). Found by exploration to move exactly three wings
 /// while leaving every center solid. Conjugated by setups they reach all wings.
-fn wing_base_cycles(n: usize) -> Vec<Vec<Move>> {
+pub(crate) fn wing_base_cycles_for_depths(n: usize, depths: &[usize]) -> Vec<Vec<Move>> {
     let size = CubeSize::new(n).expect("size>=2");
     let mut out = Vec::new();
-    for d in 1..=n - 2 {
+    for &d in depths {
         let a = slice_from(Face::Up, n, d, 1);
         for f in [Face::Front, Face::Back, Face::Left, Face::Right] {
             for ut in [1i8, -1] {
@@ -119,9 +119,10 @@ fn wing_base_cycles(n: usize) -> Vec<Vec<Move>> {
     out
 }
 
-/// Setups (whole-cube rotations + short face/slice words) used to re-aim the wing
-/// 3-cycles. Conjugating a center-safe base by any sequence stays center-safe.
-fn edge_setups(n: usize) -> Vec<Vec<Move>> {
+/// Setups (whole-cube rotations + short face/slice words) intended to re-aim the
+/// wing 3-cycles broadly. Conjugating a center-safe base by any sequence stays
+/// center-safe; retained-library connectivity is verified separately.
+fn edge_setups_for_depths(n: usize, depths: &[usize]) -> Vec<Vec<Move>> {
     let size = CubeSize::new(n).expect("size>=2");
     let mut setups = super::centers::cube_rotations(n);
     let mut singles: Vec<Move> = Face::ALL
@@ -133,7 +134,7 @@ fn edge_setups(n: usize) -> Vec<Vec<Move>> {
         })
         .collect();
     for f in [Face::Up, Face::Right, Face::Front] {
-        for d in 1..=n - 2 {
+        for &d in depths {
             for s in [1i8, -1] {
                 singles.push(slice_from(f, n, d, s));
             }
@@ -161,9 +162,9 @@ fn edge_setups(n: usize) -> Vec<Vec<Move>> {
     setups
 }
 
-pub(crate) fn wing_repertoire(n: usize) -> Vec<Vec<Move>> {
-    let setups = edge_setups(n);
-    let bases = wing_base_cycles(n);
+fn repertoire_from_depths(n: usize, depths: &[usize]) -> Vec<Vec<Move>> {
+    let setups = edge_setups_for_depths(n, depths);
+    let bases = wing_base_cycles_for_depths(n, depths);
     let mut out = Vec::with_capacity(setups.len() * bases.len());
     for s in &setups {
         for b in &bases {
@@ -171,6 +172,23 @@ pub(crate) fn wing_repertoire(n: usize) -> Vec<Vec<Move>> {
         }
     }
     out
+}
+
+pub(crate) fn wing_repertoire(n: usize) -> Vec<Vec<Move>> {
+    repertoire_from_depths(n, &(1..=n - 2).collect::<Vec<_>>())
+}
+
+/// Orbit-local repertoire used by the deterministic solver. A setup slice from
+/// another orbit commutes with a localized wing cycle at wing level, so including
+/// every depth in the cartesian product only duplicated effects and made library
+/// generation O(N²). The orbit and its mirror are sufficient.
+pub(crate) fn wing_repertoire_for_orbit(n: usize, orbit: usize) -> Vec<Vec<Move>> {
+    let mirror = n - 1 - orbit;
+    if mirror == orbit {
+        repertoire_from_depths(n, &[orbit])
+    } else {
+        repertoire_from_depths(n, &[orbit, mirror])
+    }
 }
 
 /// Wing slot index `0..12*(n-2)`: `i = e*(n-2) + (t-1)`.
