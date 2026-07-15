@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ INDEX = ROOT / "web" / "index.html"
 WORKER = ROOT / "web" / "solver-worker.js"
 LICENSE = ROOT / "LICENSE"
 WASM_LICENSE = ROOT / "crates" / "cube_wasm" / "LICENSE"
+TAURI_CONFIG = ROOT / "src-tauri" / "tauri.conf.json"
 
 
 class AuditParser(HTMLParser):
@@ -63,6 +65,9 @@ def main() -> int:
     parser.feed(html)
 
     require(LICENSE.read_bytes() == WASM_LICENSE.read_bytes(), "WASM package license must match root MIT license")
+    security = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))["app"]["security"]
+    require("'unsafe-inline'" in security["csp"].split("style-src", 1)[1].split(";", 1)[0], "inline-heavy authored UI requires style-src unsafe-inline")
+    require("style-src" in security.get("dangerousDisableAssetCspModification", []), "Tauri nonce injection must stay disabled for style-src or packaged inline styles are blocked")
 
     require(parser.tag_counts.get("main") == 1, "generated page must have one <main>")
     require(parser.tag_counts.get("header") == 1, "generated page must have one <header>")
@@ -90,6 +95,7 @@ def main() -> int:
         "requestToken:requestToken",
         "Number(v) > SOLVE_MAX_N",
         "data-reduction-elapsed aria-hidden",
+        "display:none;width:100%;height:42px",
         "Native reduction is active",
         "Progress percentages are intentionally omitted",
         "nativeCore() ? 11 : 5",

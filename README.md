@@ -103,6 +103,10 @@ move count/replay proof. It never invents evolutionary progress for large cubes.
   uses `solve_stickers`/`cancel_solve` Tauri commands; reduction never runs on the UI
   thread. A Node runtime smoke catches wasm32 traps that compilation alone cannot.
 - three.js (r128) is vendored in `web/vendor/`, so the app works offline.
+- The UI is intentionally inline-style-heavy. Tauri CSP nonce rewriting is disabled
+  **only for `style-src`** so packaged WebViews honor those styles; script nonce/hash
+  rewriting and the remaining offline-only CSP restrictions stay enabled. Build and
+  frontend smoke guards prevent this release-only styling regression from returning.
 - The Tauri shell builds the WASM via `beforeBuildCommand`, so a fresh
   `cargo tauri build` is self-contained.
 - A WebGL failure (e.g. headless Linux WebKitGTK) degrades gracefully — the solver

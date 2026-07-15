@@ -53,7 +53,23 @@ fn assert_frontend_is_fresh() {
     println!("cargo:rerun-if-changed=../web/solver-worker.js");
 }
 
+/// The authored UI intentionally uses inline style attributes extensively. Tauri's
+/// default CSP asset pass adds a style nonce; CSP then ignores `unsafe-inline`, and
+/// WebKit blocks every style attribute, leaving an unstyled document. Keep nonce/
+/// hash rewriting for scripts, but never re-enable it for `style-src` unless the UI
+/// has first been migrated completely to stylesheets/classes.
+fn assert_packaged_style_policy() {
+    let config = std::fs::read_to_string("tauri.conf.json")
+        .expect("Cube Solver build aborted: cannot read src-tauri/tauri.conf.json");
+    assert!(
+        config.contains("\"dangerousDisableAssetCspModification\": [\"style-src\"]"),
+        "Cube Solver build aborted: Tauri style-src nonce injection would block the UI's inline styles. Keep dangerousDisableAssetCspModification scoped to style-src."
+    );
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+}
+
 fn main() {
     assert_frontend_is_fresh();
+    assert_packaged_style_policy();
     tauri_build::build()
 }
