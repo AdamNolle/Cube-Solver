@@ -40,30 +40,32 @@ flakier Linux AppImage bundler. Requires a stable Rust toolchain plus the
 ## How Cube Solver works
 
 Cube Solver is the polished web UI **driven by the real Rust solver**, packaged as a
-native desktop app. Sizes 2×2–11×11 use compiled Rust/WASM solvers; larger sizes are
+native desktop app. The lightweight 2×2/3×3 engines run in a WASM worker; desktop
+4×4–11×11 reduction runs on a cancellable native Rust thread. Larger sizes are
 explicitly labeled visualization-only rather than presented as searched solutions:
 
 ```
-cube_core + cube_solver  ──wasm-pack──▶  web/pkg/  (WebAssembly)
-                                            │  imported by
-                                  web/index.html  (three.js 3D UI)
-                                            │  embedded by
-                                      src-tauri/   (Tauri v2 native shell)
+                         ┌─ wasm-pack → Web Worker (2×2/3×3; browser reduction ≤5×5)
+cube_core + cube_solver ─┤
+                         └─ Tauri native command thread (desktop reduction 4×4–11×11)
+                                           │
+                                 web/index.html (three.js UI)
 ```
 
 ### Studio
 
-1. **Scramble** — applies random face turns to the on-screen cube *instantly*. On
-   the 2×2/3×3 the turns are outer faces only (so the solver can invert them);
-   bigger cubes mix **every layer** for a proper full scramble.
+1. **Scramble** — applies random turns to the on-screen cube *instantly*. The
+   2×2/3×3 use outer turns; supported larger cubes use standard contiguous wide
+   turns from either face, mixing inner layers while staying within the measured
+   reduction corpus.
 2. **Solve** — the cube's complete **sticker state** (never the scramble moves) is
    handed to the solver, which returns a replay-verified solution; the cube then
    animates it.
-   - It runs in a **Web Worker** (off the main thread), so the UI stays responsive
-     and a long/hard solve can be **cancelled**. Reduction also has cooperative
-     internal deadlines; worker termination remains the hard-stop backstop.
+   - 2×2/3×3 run in a **Web Worker**. Desktop 4×4–11×11 reduction runs through a
+     Tauri command on a native blocking thread. Both keep the UI responsive; native
+     cancellation sets the same cooperative control checked throughout reduction.
    - Automatic scrambles use the platform cryptographic RNG where available and
-     avoid adjacent same-axis turns. The worker reconstructs the cube from only the
+     avoid adjacent same-axis turns. Every solver boundary receives only the
      `6·N²` visible color indices, so it cannot replay a hidden inverse sequence.
 3. **Solver race / best-path solver** — the panel adapts to the cube:
    - **3×3** — a real **two-phase (Kociemba) solver** (`cube_solver::kociemba`): it
@@ -77,26 +79,29 @@ cube_core + cube_solver  ──wasm-pack──▶  web/pkg/  (WebAssembly)
      the shortest verified solution wins.
 
 **What actually solves:** **2×2 and 3×3 are production solver paths** — the 3×3 by
-the two-phase solver (any legal scramble), the 2×2 by the engine race. **4×4–11×11
-use the real reduction implementation** (centers → wing pairing → reduced 3×3 +
-parity), and every returned path is replayed before success is reported; this range
-remains experimental while slow reliability gates are moved into release CI. **12×12
-and above are currently visualization-only** in the app and are labeled as such.
+the two-phase solver (any legal scramble), the 2×2 by the engine race. **Desktop
+4×4–11×11 use native deterministic reduction** (centers → wing pairing → reduced
+3×3 + parity), and every returned path is replayed before success is reported. The
+standalone browser build exposes only its runtime-smoked reduction range through
+5×5. **12×12 and above are visualization-only** in the desktop app and are labeled
+as such.
 Research toward resource-bounded arbitrary N is tracked in
 [`docs/ARBITRARY_N_RESEARCH.md`](docs/ARBITRARY_N_RESEARCH.md).
 
 ### Swarm
 
-A wall of independent **evolutionary trials**, each a candidate solution to *your
-Studio cube* — it re-syncs the moment you re-scramble. Trials start as exact copies
-of the cube and mutate/recombine (a (1+λ) elitist search with stagnation restarts)
-until they reach solved (the card turns green, then restarts). The **"# off"** on a
-card is how many stickers are still out of place.
+Swarm is deliberately dual-mode. On 2×2/3×3 it is a wall of independent **real
+evolutionary trials** synchronized to your Studio cube: candidates mutate/recombine,
+show exact sticker mismatch and genome telemetry, turn green when solved, then
+restart. On 4×4–11×11 it switches to **truthful deterministic-reduction telemetry**:
+live elapsed activity, the centers → edges → reduced-3×3 pipeline, and the final
+move count/replay proof. It never invents evolutionary progress for large cubes.
 
 ### Robustness notes
 
-- `web/solver-worker.js` loads WASM and solves off-thread. A bounded main-thread
-  fallback exists only for 2×2/3×3; reduction never runs on the UI thread.
+- `web/solver-worker.js` loads WASM for browser/off-thread solving. Desktop reduction
+  uses `solve_stickers`/`cancel_solve` Tauri commands; reduction never runs on the UI
+  thread. A Node runtime smoke catches wasm32 traps that compilation alone cannot.
 - three.js (r128) is vendored in `web/vendor/`, so the app works offline.
 - The Tauri shell builds the WASM via `beforeBuildCommand`, so a fresh
   `cargo tauri build` is self-contained.
@@ -171,7 +176,8 @@ cargo test --workspace                                   # all tests
 cargo clippy --workspace --all-targets -- -D warnings    # lint gate
 cargo fmt --all -- --check                               # format gate
 python3 tools/gen-index.py                                # regenerate web/index.html
-python3 tools/frontend-smoke.py                           # HTML/ARIA/JS/worker contract smoke
+python3 tools/frontend-smoke.py                           # HTML/ARIA/JS/worker/native contract smoke
+node tools/wasm-runtime-smoke.mjs                         # generated WASM runtime + replay smoke
 ```
 
 CI runs format + clippy + tests + release build on Linux, macOS, and Windows.

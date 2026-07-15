@@ -633,8 +633,8 @@ class Component extends DCLogic {
     this.setSolvedPct(frac);
     this.ui.count.textContent = `≈ ${this.movesDone.toLocaleString()} / ${est.toLocaleString()}`;
     this.ui.move.style.display = 'none';
-    if (solving) { this.updateLanes(this.texProg); this.ui.status.textContent = 'Solving · reduction sweep'; }
-    else this.ui.status.textContent = 'Scrambling';
+    if (solving) { this.updateLanes(this.texProg); if (this.ui.status.textContent !== 'Playing visual demo') this.ui.status.textContent = 'Playing visual demo'; }
+    else if (this.ui.status.textContent !== 'Scrambling') this.ui.status.textContent = 'Scrambling';
     if (this.texProg >= 1) this.onPhaseComplete();
   }
 
@@ -858,14 +858,14 @@ class Component extends DCLogic {
       this.setSolvedPct(1 - frac);
       this.ui.count.textContent = `${this.movesDone} / ${this.totalMoves}`;
       const cur = this.queue[0] || this.activeMove?.m;
-      if (cur) { this.ui.status.textContent = 'Scrambling'; this.ui.move.textContent = this.notation(cur); this.ui.move.style.display = 'inline-block'; }
+      if (cur) { if (this.ui.status.textContent !== 'Scrambling') this.ui.status.textContent = 'Scrambling'; this.ui.move.textContent = this.notation(cur); this.ui.move.style.display = 'inline-block'; }
     } else if (this.phase === 'solving') {
       this.solveProgress = frac;
       this.setSolvedPct(frac);
       this.ui.count.textContent = `${this.movesDone} / ${this.totalMoves}`;
       this.updateLanes(frac);
       const cur = this.queue[0] || this.activeMove?.m;
-      if (cur) { this.ui.status.textContent = 'Solving'; this.ui.move.textContent = this.notation(cur); this.ui.move.style.display = 'inline-block'; }
+      if (cur) { const solveStatus = this._lastSolveTelemetry?.verified ? 'Replaying verified solution' : 'Solving'; if (this.ui.status.textContent !== solveStatus) this.ui.status.textContent = solveStatus; this.ui.move.textContent = this.notation(cur); this.ui.move.style.display = 'inline-block'; }
     }
   }
 
@@ -1251,6 +1251,8 @@ class Component extends DCLogic {
       abortPendingSolve(this);   // changing N invalidates an in-flight solve's moves
       origSetN(n);
       this.lastScramble = [];   // a new N invalidates the old scramble's layers
+      this.scrambleMoveCount = 0;
+      this._lastSolveTelemetry = null;
       if (this.lab){ this.lab.set_size(this.n); this.lab.reset(); }
       if (this._refreshSolvability) this._refreshSolvability(this);
     };
@@ -1313,11 +1315,12 @@ class Component extends DCLogic {
       if (this.busy) return;
       if (this.mode !== 'cubie') return origScramble();   // huge (texture) cubes: design path
       this.resetSolved(true);
+      this._lastSolveTelemetry = null;
       const N = this.n;
-      // 2×2/3×3 can be inverted by the real (outer-move) solver, so scramble with
-      // outer faces only (the two-phase solver inverts outer turns). 4×4+ up to
-      // SOLVE_MAX_N go through the reduction solver, which handles ANY scramble, so
-      // mix every layer for a proper full scramble; bigger cubes stay visual-only.
+      // 2×2/3×3 use outer turns. Supported 4×4+ cubes use standard contiguous
+      // wide turns from either face, mixing inner layers while staying inside the
+      // replay corpus exercised by the deterministic reduction solver. Bigger
+      // visualization-only cubes may use arbitrary single slices.
       const solvable = (N <= SOLVE_MAX_N) && !!this.lab;
       // Never scramble a solvable cube deeper than the exact solver's reach, or
       // Solve would search to SOLVE_MAX_DEPTH and find no solution.
@@ -1330,10 +1333,17 @@ class Component extends DCLogic {
         let axis = prev < 0 ? secureBelow(3) : secureBelow(2);
         if (prev >= 0 && axis >= prev) axis++;
         prev = axis;
-        const layer = (N <= 3) ? (secureBelow(2) ? N-1 : 0) : secureBelow(N);
         const dir = secureBelow(2) ? 1 : -1;
-        this.lastScramble.push({axis, layer, dir});
+        if (solvable && N >= 4){
+          const width = 1 + secureBelow(Math.max(1, Math.floor(N/2)));
+          const start = secureBelow(2) ? N-width : 0;
+          for (let layer=start; layer<start+width; layer++) this.lastScramble.push({axis, layer, dir});
+        } else {
+          const layer = (N <= 3) ? (secureBelow(2) ? N-1 : 0) : secureBelow(N);
+          this.lastScramble.push({axis, layer, dir});
+        }
       }
+      this.scrambleMoveCount = depth;
       // Apply the whole scramble instantly — fast at any depth, no stuck queue.
       for (const m of this.lastScramble) this.applyInstant(m);
       // Mirror into the solver's cube only when it can actually solve it (N<=SOLVE_MAX_N).
@@ -1401,8 +1411,89 @@ class Component extends DCLogic {
       return origCopyPath();
     };
 
+    function nativeCore(){
+      return globalThis.__TAURI__ && globalThis.__TAURI__.core && globalThis.__TAURI__.core.invoke
+        ? globalThis.__TAURI__.core : null;
+    }
+    function hasNativeReduction(self){ return !!nativeCore() && (self.n||0) >= 4 && (self.n||0) <= 11; }
+    function solveRequestToken(){
+      if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') return globalThis.crypto.randomUUID();
+      var parts=[]; for(var i=0;i<4;i++) parts.push(secureBelow(0x100000000).toString(16).padStart(8,'0'));
+      return Date.now().toString(16)+'-'+parts.join('');
+    }
+    function elapsedLabel(ms){
+      var seconds = Math.max(0, Math.floor(ms / 1000));
+      return seconds < 60 ? (seconds + 's') : (Math.floor(seconds/60) + 'm ' + (seconds%60) + 's');
+    }
+    function refreshSolveActivity(self){
+      if (!self._solvePending) return;
+      var elapsed = performance.now() - (self._solveStartedAt || performance.now());
+      self._solveElapsedMs = elapsed;
+      var engine = self._solveDispatch === 'native' ? 'Native reduction' :
+                   self._solveDispatch === 'worker' ? 'WASM solver' : 'Solver';
+      var statusKey = engine+':'+self.n;
+      if (self.ui && self.ui.status && self._solveStatusKey !== statusKey){
+        self._solveStatusKey = statusKey;
+        self.ui.status.textContent = engine + ' active on ' + self.n + '×' + self.n + ' · Cancel available';
+      }
+      var badge = self.root.querySelector('[data-solve-elapsed]');
+      if (!badge && self.ui && self.ui.status){
+        badge=document.createElement('span'); badge.setAttribute('data-solve-elapsed',''); badge.setAttribute('aria-hidden','true');
+        badge.style.cssText='margin-left:7px;font:600 10.5px/1.2 ui-monospace,SFMono-Regular,monospace;color:#1573E6;background:#EAF3FF;border-radius:999px;padding:3px 7px;';
+        self.ui.status.insertAdjacentElement('afterend', badge);
+      }
+      if (badge){ badge.style.display='inline-block'; badge.textContent=elapsedLabel(elapsed); }
+      var travel = self.reducedMotion ? 0 : ((Math.floor(elapsed/500)%4) * 80);
+      var lane = self.root.querySelector('[data-lane="det"]');
+      if (lane){
+        lane.removeAttribute('aria-valuenow'); lane.setAttribute('aria-valuetext','Solver active');
+        var stat=lane.querySelector('[data-stat]'), fill=lane.querySelector('[data-fill]'), pct=lane.querySelector('[data-pct2]');
+        if (stat) stat.textContent = 'working from sticker state · ' + elapsedLabel(elapsed);
+        if (pct){ pct.textContent = 'LIVE'; pct.style.color = '#1573E6'; }
+        if (fill){ fill.style.width='28%'; fill.style.opacity='0.65'; fill.style.transform='translateX('+travel+'%)'; fill.style.transition='transform .5s linear'; }
+      }
+      var progress=self.root.querySelector('[data-progress]');
+      if (progress){
+        if (progress.parentElement) progress.parentElement.style.overflow='hidden';
+        progress.removeAttribute('aria-valuenow'); progress.setAttribute('aria-valuetext','Solver active');
+        progress.style.width='28%'; progress.style.transform='translateX('+travel+'%)'; progress.style.transition='transform .5s linear';
+      }
+    }
+    function startSolveActivity(self){
+      self._solveStartedAt = performance.now();
+      clearInterval(self._solveHeartbeat);
+      refreshSolveActivity(self);
+      self._solveHeartbeat = setInterval(function(){ refreshSolveActivity(self); }, 500);
+    }
+    function stopSolveActivity(self){
+      clearInterval(self._solveHeartbeat);
+      self._solveHeartbeat = null;
+      self._solveElapsedMs = self._solveStartedAt ? performance.now() - self._solveStartedAt : 0;
+      self._solveStatusKey = null;
+      var badge=self.root.querySelector('[data-solve-elapsed]'); if (badge) badge.style.display='none';
+      var lane=self.root.querySelector('[data-lane="det"]');
+      if (lane){ lane.removeAttribute('aria-valuetext'); var fill=lane.querySelector('[data-fill]'); if(fill){ fill.style.opacity='1'; fill.style.transform='none'; } }
+      var progress=self.root.querySelector('[data-progress]');
+      if (progress){ progress.removeAttribute('aria-valuetext'); progress.style.transform='none'; progress.style.transition='width .12s linear'; progress.style.width='0%'; progress.setAttribute('aria-valuenow','0'); }
+    }
+    function postNativeSolve(self){
+      var core = nativeCore();
+      if (!core || !self._solvePending || self._solveDispatch) return false;
+      self._solveDispatch = 'native';
+      showCancel(self, true);
+      startSolveActivity(self);
+      var jobId = self._solveJobId, requestToken = self._solveRequestToken;
+      var colors = Array.from(self.lab.face_colors(self.n));
+      core.invoke('solve_stickers', { requestToken:requestToken, n:self.n, colors:colors }).then(function(result){
+        onSolveResult(self, { type:'result', jobId:jobId, ok:true, result:result });
+      }).catch(function(error){
+        onSolveResult(self, { type:'result', jobId:jobId, ok:false, error:String(error) });
+      });
+      return true;
+    }
+
     inst.solve = function(){
-      if (this.mode !== 'cubie') return origSolve();   // texture (huge) cubes: design path
+      if (this.mode !== 'cubie'){ this._visualSolve=true; return origSolve(); }   // texture cubes: honest visual path
       if (this.busy || this._solvePending) return;
       // Solve must always do something. On a fresh / already-solved cube
       // (scrambled=false) it used to silently no-op; scramble first, then solve.
@@ -1432,6 +1523,7 @@ class Component extends DCLogic {
       this._solvePending = true;
       this._solveDispatch = null;
       this._solveJobId = (this._solveJobId || 0) + 1;
+      this._solveRequestToken = solveRequestToken();
       var solveJobId = this._solveJobId;
       // Reduction grows quickly with N. Keep a watchdog, but size it from measured
       // release behavior so a valid 9×9–11×11 solve is not killed at eight seconds.
@@ -1441,26 +1533,31 @@ class Component extends DCLogic {
       this._solveWatchdog = setTimeout(function(){
         if (!_sw._solvePending || _sw._solveJobId !== solveJobId) return;
         abortPendingSolve(_sw);
+        _sw._lastSolveTelemetry = { n:_sw.n, elapsedMs:_sw._solveElapsedMs||watchdogMs, verified:false, error:'Solve timed out' };
         if (_sw.ui && _sw.ui.status) _sw.ui.status.textContent = 'Solve timed out — try a smaller cube or shallower scramble';
         if (_sw.syncControls) _sw.syncControls();
       }, watchdogMs);
-      if (this.ui && this.ui.status) this.ui.status.textContent = 'Solving…';
+      if (this.ui && this.ui.status) this.ui.status.textContent = 'Starting solver…';
       if (this.startLanes) this.startLanes();
       if (this.syncControls) this.syncControls();
-      var worker = ensureWorker(this);
-      if (this._workerReady && worker){
-        postWorkerSolve(this);
-      } else if (!worker) {
-        handleWorkerFailure(this);
+      if (hasNativeReduction(this)){
+        postNativeSolve(this);
       } else {
-        showCancel(this, true);
-        if (this.ui && this.ui.status) this.ui.status.textContent = 'Loading solver worker…';
-        clearTimeout(this._workerLoadTimer);
-        this._workerLoadTimer = setTimeout(function(){
-          if (!_sw._solvePending || _sw._workerReady) return;
-          if (_sw.n <= 3) runSmallFallback(_sw);
-          else handleWorkerFailure(_sw);
-        }, 1500);
+        var worker = ensureWorker(this);
+        if (this._workerReady && worker){
+          postWorkerSolve(this);
+        } else if (!worker) {
+          handleWorkerFailure(this);
+        } else {
+          showCancel(this, true);
+          if (this.ui && this.ui.status) this.ui.status.textContent = 'Loading solver worker…';
+          clearTimeout(this._workerLoadTimer);
+          this._workerLoadTimer = setTimeout(function(){
+            if (!_sw._solvePending || _sw._workerReady) return;
+            if (_sw.n <= 3) runSmallFallback(_sw);
+            else handleWorkerFailure(_sw);
+          }, 1500);
+        }
       }
     };
 
@@ -1470,6 +1567,7 @@ class Component extends DCLogic {
       self._solveDispatch = 'worker';
       clearTimeout(self._workerLoadTimer);
       showCancel(self, true);
+      startSolveActivity(self);
       // Send only the visible sticker state. The worker never receives the
       // scramble sequence, so its verified path cannot be a hidden inverse.
       var colors = self.lab.face_colors(self.n);
@@ -1480,6 +1578,7 @@ class Component extends DCLogic {
       if (!self._solvePending || self._solveDispatch) return;
       self._solveDispatch = 'fallback';
       clearTimeout(self._workerLoadTimer);
+      startSolveActivity(self);
       var jobId = self._solveJobId;
       self._fallbackTimer = setTimeout(function(){
         self._fallbackTimer = null;
@@ -1499,7 +1598,10 @@ class Component extends DCLogic {
       self._solveDispatch = null;
       if (self.n <= 3){ runSmallFallback(self); return; }
       clearTimeout(self._solveWatchdog);
+      stopSolveActivity(self);
+      self._lastSolveTelemetry = { n:self.n, elapsedMs:self._solveElapsedMs||0, verified:false, error:'Solver worker unavailable' };
       self._solvePending = false;
+      self._solveRequestToken = null;
       self._solveDispatch = null;
       showCancel(self, false);
       if (self.ui && self.ui.status) self.ui.status.textContent = 'Solver worker unavailable — reduction was not run on the UI thread';
@@ -1535,15 +1637,25 @@ class Component extends DCLogic {
     // cannot receive events until it returns, but duplicate dispatch is prevented.
     function abortPendingSolve(self){
       if (!self._solvePending) return false;
+      var dispatch = self._solveDispatch, requestToken = self._solveRequestToken;
       clearTimeout(self._solveWatchdog);
       clearTimeout(self._workerLoadTimer);
       clearTimeout(self._fallbackTimer);
+      stopSolveActivity(self);
+      if (dispatch === 'native' && nativeCore()){
+        nativeCore().invoke('cancel_solve', { requestToken:requestToken }).catch(function(){});
+      }
       self._solvePending = false;
+      self._solveRequestToken = null;
       self._solveDispatch = null;
       self._solveJobId = (self._solveJobId || 0) + 1;
-      if (self._worker){ try { self._worker.terminate(); } catch(e){} self._worker = null; self._workerReady = false; }
+      var terminatedWorker = false;
+      if (dispatch !== 'native' && self._worker){
+        try { self._worker.terminate(); } catch(e){}
+        self._worker = null; self._workerReady = false; terminatedWorker = true;
+      }
       showCancel(self, false);
-      ensureWorker(self);
+      if (terminatedWorker) ensureWorker(self);
       return true;
     }
     function onSolveResult(self, data){
@@ -1551,17 +1663,24 @@ class Component extends DCLogic {
       clearTimeout(self._solveWatchdog);
       clearTimeout(self._workerLoadTimer);
       clearTimeout(self._fallbackTimer);
+      stopSolveActivity(self);
+      var elapsedMs = self._solveElapsedMs || 0;
       self._solvePending = false;
+      self._solveRequestToken = null;
       self._solveDispatch = null;
       showCancel(self, false);
       var res = null;
       if (data && data.ok){ try { res = JSON.parse(data.result); } catch(e){} }
       if (!res || !res.found || !res.moves || !res.moves.length){
-        if (self.ui && self.ui.status) self.ui.status.textContent = 'No verified solution within budget — lower the scramble depth';
+        self._lastSolveTelemetry = { n:self.n, elapsedMs:elapsedMs, verified:false, error:(data && data.error) || 'No verified solution within budget' };
+        if (self.ui && self.ui.status) self.ui.status.textContent = data && data.error
+          ? ('Solver stopped: ' + data.error)
+          : 'No verified solution within budget — lower the scramble depth';
         lanesUpdate(self, (res && res.lanes) || [], null, 0);
         if (self.syncControls) self.syncControls();
         return;
       }
+      self._lastSolveTelemetry = { n:self.n, elapsedMs:elapsedMs, verified:true, moveCount:res.moveCount, winner:res.winner };
       self.realWinner = res.winner; self.realLanes = res.lanes || [];
       self.lastSolution = res.moves;
       // res.moveCount is the face-turn (HTM) count; res.moves is the half-turn-
@@ -1569,10 +1688,11 @@ class Component extends DCLogic {
       // solution panel so all three agree (the panel must show U2, not "U U").
       self.realMoveCount = res.moveCount;
       self.realNotation = res.notation || null;
-      updateProof(self, (self.lastScramble||[]).length, res.moveCount);
+      updateProof(self, self.scrambleMoveCount || (self.lastScramble||[]).length, res.moveCount);
       self.queue = res.moves.slice();   // fill the queue BEFORE claiming busy
       self.movesDone = 0; self.totalMoves = self.queue.length;
       self.phase = 'solving'; self.busy = true;
+      if (self.ui && self.ui.status) self.ui.status.textContent = 'Verified in ' + elapsedLabel(elapsedMs) + ' — replaying solution';
       if (self.ui && self.ui.count) self.ui.count.style.display = 'inline-block';
       if (self.syncControls) self.syncControls();
     }
@@ -1604,6 +1724,7 @@ class Component extends DCLogic {
       var hadSearch = abortPendingSolve(self);   // stop an off-thread search, if any
       var hadReplay = stopReplay(self);          // stop the visible replay, if any
       if (!hadSearch && !hadReplay) return;      // nothing to cancel
+      if (hadSearch) self._lastSolveTelemetry = { n:self.n, elapsedMs:self._solveElapsedMs||0, verified:false, error:'Solve cancelled' };
       if (self.resetLanes) self.resetLanes();
       if (self.ui && self.ui.status) self.ui.status.textContent = 'Solve cancelled — scramble or solve again';
       if (self.syncControls) self.syncControls();
@@ -1645,6 +1766,10 @@ class Component extends DCLogic {
       clearTimeout(this._solveWatchdog);
       clearTimeout(this._workerLoadTimer);
       clearTimeout(this._fallbackTimer);
+      clearInterval(this._solveHeartbeat);
+      if (this._solvePending && this._solveDispatch === 'native' && nativeCore()){
+        nativeCore().invoke('cancel_solve', { requestToken:this._solveRequestToken }).catch(function(){});
+      }
       if (this._worker){ try { this._worker.terminate(); } catch(e){} this._worker=null; }
       if (origUnmount) origUnmount();
     };
@@ -1710,21 +1835,56 @@ class Component extends DCLogic {
       var grid = this.root.querySelector('[data-swarm]');
       var msg = this.root.querySelector('[data-swarm-msg]');
       var liveEl = this.root.querySelector('[data-swarm-live]');
+      var note = this.root.querySelector('[data-swarm-note]');
       // Remember the grid's real display value so we can restore it (don't blank it).
       if (grid && this._gridDisp === undefined) this._gridDisp = grid.style.display || 'grid';
-      // Bigger cubes aren't solvable by search/evolution — explain instead of stalling.
+      // Truthful dual mode: evolutionary population cards for 2×2/3×3; live
+      // reduction telemetry for 4×4–11×11. Never imply the GA solves big cubes.
       if ((this.n||3) > SWARM_MAX){
         this.swarmLab = null;
         if (grid) grid.style.display = 'none';
-        if (liveEl) liveEl.textContent = '';
+        var n = this.n||3, telem = this._lastSolveTelemetry;
+        if (n > SOLVE_MAX_N){
+          if (note) note.innerHTML = 'This size is <b>visualization-only</b> in the current platform. No search or reduction progress is fabricated.';
+          if (liveEl && liveEl.textContent !== 'Visualization mode — choose a supported size for live solving') liveEl.textContent = 'Visualization mode — choose a supported size for live solving';
+        } else {
+          if (note) note.innerHTML = 'For 4×4–11×11 this view switches from evolutionary cards to <b>truthful deterministic-reduction telemetry</b>. It shows elapsed activity and replay proof without inventing node counts or percentages.';
+          if (liveEl && liveEl.textContent !== 'Reduction telemetry — evolutionary search remains available on 2×2 and 3×3') liveEl.textContent = 'Reduction telemetry — evolutionary search remains available on 2×2 and 3×3';
+        }
         if (msg){
           msg.style.display = 'block';
-          msg.innerHTML = 'The evolutionary swarm races to solve the cube the engines can actually crack — the <b>3×3</b> (and 2×2). A <b>' + this.n + '×' + this.n + '</b> cube is beyond any search or evolutionary solver. Set Studio to <b>3×3</b> to watch the whole wall learn to solve your cube.';
+          var stateKey = n > SOLVE_MAX_N ? ('visual:'+n+':'+SOLVE_MAX_N) :
+            this._solvePending ? ('active:'+n+':'+this._solveDispatch) :
+            telem && telem.n === n && telem.verified ? ('verified:'+n+':'+telem.moveCount+':'+Math.round(telem.elapsedMs)) :
+            telem && telem.n === n ? ('failed:'+n+':'+String(telem.error)) : ('ready:'+n);
+          if (msg._telemetryState !== stateKey){
+            msg._telemetryState = stateKey;
+            var pipeline = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 10px;">' +
+              ['sticker state','centers','edge wings','reduced 3×3','independent replay'].map(function(s){ return '<span style="padding:5px 8px;border:1px solid #D9E2D5;border-radius:999px;background:#fff;font-size:11px;color:#5E6C59;">'+s+'</span>'; }).join('<span style="color:#A9B3A5;padding:5px 0;">→</span>') + '</div>';
+            if (n > SOLVE_MAX_N){
+              msg.innerHTML = '<b>'+n+'×'+n+' is visualization-only.</b><div style="margin-top:7px;">This build runs verified solves through '+SOLVE_MAX_N+'×'+SOLVE_MAX_N+'. Use 2×2/3×3 to watch the evolutionary population, or a supported reduction size to watch solver telemetry.</div>';
+            } else if (this._solvePending){
+              msg.innerHTML = '<div style="display:flex;align-items:center;gap:9px;color:#1573E6;"><span style="width:10px;height:10px;border-radius:50%;background:#1573E6;box-shadow:0 0 0 5px rgba(21,115,230,.12);"></span><b>'+
+                (this._solveDispatch === 'native' ? 'Native reduction is active' : 'WASM solver is active') +
+                '</b></div><div style="font-size:22px;font-weight:650;color:#262622;margin-top:12px;">'+n+'×'+n+' · <span data-reduction-elapsed aria-hidden="true">0s</span></div>' + pipeline +
+                '<div style="font-size:12px;color:#6F756A;">Working from '+(6*n*n).toLocaleString()+' visible sticker colours. Progress percentages are intentionally omitted because the reduction stages have data-dependent costs. Cancel remains available in Studio.</div>';
+            } else if (telem && telem.n === n && telem.verified){
+              msg.innerHTML = '<div style="color:#1B8A45;font-weight:650;">✓ Replay-verified reduction solve</div><div style="font-size:22px;font-weight:650;color:#262622;margin-top:10px;">'+telem.moveCount+' moves · '+elapsedLabel(telem.elapsedMs)+'</div>' + pipeline +
+                '<div style="font-size:12px;color:#6F756A;">The returned legal moves were independently replayed to solved before animation began.</div>';
+            } else if (telem && telem.n === n && !telem.verified){
+              msg.innerHTML = '<div style="color:#A35A24;font-weight:650;">Reduction stopped without a verified path</div><div style="margin-top:8px;font-size:12px;color:#6F756A;">See the Studio status for details, then retry or choose a smaller cube.</div>' + pipeline;
+            } else {
+              msg.innerHTML = '<b>'+n+'×'+n+' uses deterministic reduction, not evolutionary search.</b><div style="margin-top:7px;">Scramble and press Solve in Studio. This panel will show live elapsed activity, the real reduction pipeline, and replay-verified results.</div>' + pipeline;
+            }
+          }
+          var timer=msg.querySelector('[data-reduction-elapsed]');
+          if (timer) timer.textContent=elapsedLabel(this._solveElapsedMs||0);
         }
         return;
       }
       if (grid) grid.style.display = this._gridDisp;
       if (msg) msg.style.display = 'none';
+      if (note) note.innerHTML = 'Each cell is one <b>trial of the evolutionary solver</b>, and every trial starts as an exact copy of <b>your Studio cube</b>. They mutate and recombine until a trial reaches solved (it turns green, then restarts from the cube). Change the Studio scramble and the whole wall instantly re-syncs to it. The trials see only the cube state, never the scramble.';
       // Always track the Studio cube: rebuild whenever its scramble (or N) changes.
       if (!this.swarmLab) makeSwarm(this);
       else if (this._swarmKey !== swarmKey(this)) makeSwarm(this);
@@ -1825,6 +1985,7 @@ class Component extends DCLogic {
         live.style.cssText='font-size:11.5px;font-weight:500;color:#1573E6;margin:0 2px 12px;';
         live.textContent = 'Tracking your Studio cube';
         var msg = document.createElement('div'); msg.setAttribute('data-swarm-msg','');
+        msg.setAttribute('role','status'); msg.setAttribute('aria-live','polite');
         msg.style.cssText='display:none;font-size:14px;color:#8C887F;line-height:1.6;background:#F7F6F2;border:1px solid #ECEAE4;border-radius:16px;padding:28px 26px;margin:6px 2px;max-width:720px;';
         grid.parentNode.insertBefore(note, grid);
         grid.parentNode.insertBefore(live, grid);
@@ -1846,7 +2007,9 @@ class Component extends DCLogic {
     // ---------- Solvability guidance: always say what Solve will do ----------
     // SOLVE_MAX_DEPTH: reach of the legacy search (2x2). SOLVE_REAL_DEPTH: the 3x3
     // now uses the two-phase (Kociemba) solver, which cracks ANY scramble.
-    var SOLVE_MAX_N = 11, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
+    // Native Tauri reduction is the measured 4×4–11×11 desktop path. The
+    // standalone browser build stays at the WASM-runtime-verified 5×5 ceiling.
+    var SOLVE_MAX_N = nativeCore() ? 11 : 5, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
 
     // Make the "Solver Race" panel honest about which engine actually runs:
     //   • 2×2 — three real engines race (meet-in-the-middle, beam, island genetic);
@@ -1952,7 +2115,12 @@ class Component extends DCLogic {
       }
       ['4','5','7','20','50','100','500','1000'].forEach(function(v){
         var b = self.root.querySelector('[data-n="'+v+'"]');
-        if(b){ b.style.opacity='0.5'; b.title='Visual only — solved for real on 2×2 through '+SOLVE_MAX_N+'×'+SOLVE_MAX_N; }
+        if(!b) return;
+        if(Number(v) > SOLVE_MAX_N){
+          b.style.opacity='0.5'; b.title='Visual only — solved for real on 2×2 through '+SOLVE_MAX_N+'×'+SOLVE_MAX_N;
+        } else {
+          b.style.opacity='1'; b.title='Runs the real replay-verified solver';
+        }
       });
       var sd2 = self.root.querySelector('[data-scramble]');
       if (sd2) sd2.addEventListener('input', function(){ setTimeout(function(){ refreshSolvability(self); }, 0); });

@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+cube_wasm = { path = "../crates/cube_wasm" }
 
 # Own workspace — independent of the parent crates' workspace/profile.
 [workspace]

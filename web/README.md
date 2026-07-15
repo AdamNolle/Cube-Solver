@@ -1,9 +1,9 @@
-# Cube Solver — web UI (real solver, via WASM)
+# Cube Solver — web UI (WASM + native desktop reduction)
 
-The **Cube Solver UI** wired to the real Rust solver. The cube model and engines
-are compiled to WebAssembly and drive the page. 2×2 uses the solver race, 3×3 uses
-the two-phase engine, and 4×4–11×11 use replay-verified reduction. Larger cubes are
-explicitly visualization-only.
+The **Cube Solver UI** wired to the real Rust solver. 2×2/3×3 run in a WebAssembly
+worker. In the Tauri desktop app, 4×4–11×11 use a cancellable native Rust command;
+the standalone browser build exposes only its runtime-smoked WASM reduction range
+through 5×5. Larger cubes are explicitly visualization-only.
 
 ## Run it
 
@@ -20,24 +20,23 @@ python3 -m http.server -d web 8000      # then open http://localhost:8000
 
 ## How the real solver is wired
 
-- `crates/cube_wasm` is a `wasm-bindgen` bridge exposing a `CubeLab` object.
-  The worker loads a complete sticker-color buffer and returns a replay-verified
-  solution as `{axis, layer, dir}` quarter-turns plus lane metadata.
+- `crates/cube_wasm` is both a `wasm-bindgen` bridge exposing `CubeLab` and the
+  shared sticker-only entry point used by Tauri's native `solve_stickers` command.
+  Both load a complete color buffer and return replay-verified `{axis, layer, dir}`
+  quarter-turns plus lane metadata.
 - The web UI's cube and `cube_core` share the **same geometry convention**
   (Up=+Y, Down=−Y, Front=+Z, Back=−Z, Left=−X, Right=+X; a `dir=+1` turn is a
-  right-hand quarter turn). So a scramble is mirrored move-for-move into the
-  solver's cube, the solver runs, and the returned moves animate on screen and
-  truly solve it.
+  right-hand quarter turn). The solver reconstructs the cube from visible stickers,
+  then the returned moves animate on screen and truly solve it.
 - The solver builds for wasm by disabling `cube_solver`'s default `parallel`
   feature (no rayon / OS threads — the three engines run sequentially in the
   browser) and using `web-time` for a wasm-safe clock.
 
 Automatic scrambles use `crypto.getRandomValues` when available, avoid adjacent
-same-axis turns, and use outer layers on 2×2/3×3 or all layers on the reduction
-range. The solver worker receives only the visible sticker colors—not the move
-history—so it cannot simply invert the generated sequence. Cubes past 11×11 remain
-an honestly labeled sampled visualization while arbitrary-N reduction research
-continues.
+same-axis turns, and use outer turns on 2×2/3×3 or standard contiguous wide turns
+on the desktop reduction range. Every solver boundary receives only visible sticker
+colors—not move history—so it cannot simply invert the generated sequence. Cubes
+past the active platform's measured limit remain an honestly labeled visualization.
 
 ## Rebuilding the WASM
 
@@ -47,6 +46,7 @@ after changing any Rust in `cube_wasm`/`cube_solver`/`cube_core`:
 ```sh
 wasm-pack build crates/cube_wasm --release --target web \
   --out-dir "$PWD/web/pkg" --out-name cube_wasm
+node tools/wasm-runtime-smoke.mjs
 ```
 
 ## How the page was built

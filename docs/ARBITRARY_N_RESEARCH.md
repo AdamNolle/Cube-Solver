@@ -10,8 +10,8 @@ Evolutionary search is a real supplemental technique for candidate exploration a
 
 - 2×2: bounded exact/beam/evolutionary race.
 - 3×3: checked, replay-verified two-phase solver.
-- 4×4–11×11: release-mode replay corpus passes (20 cases each through 6×6, 10 each through 8×8, and 3 each through 11×11) and is wired into release CI.
-- 12×12: full controlled replay gate passes; the application still does not route sizes above 11 because browser deadlines and frontier reliability remain intentionally conservative.
+- Desktop 4×4–11×11: release-mode wide-turn replay corpus passes (20 cases each through 6×6, 10 each through 8×8, and 3 each through 11×11) and is wired into release CI. Tauri runs this path on a cancellable native Rust thread; the standalone browser caps reduction at its runtime-smoked 5×5 range.
+- 12×12: full controlled replay gate passes; the application still does not route sizes above 11 because interactive deadlines and frontier reliability remain intentionally conservative.
 - 20×20: full corpus 3/3 plus sparse, alternating, and all-nine-orbit adversarial parity/replay gates pass with the polynomial visible-form normalizer.
 - 24×24: full corpus 3/3; 28×28, 32×32, 36×36, and 40×40 each pass 2/2; 44×44 passes 2/2 after the current additional-seed gate.
 - 66×66 and 132×132: canonical sparse, alternating, all-defect, and noncanonical isolated orbit transports replay without fixed-width masks; these are not full random end-to-end solves.
@@ -115,6 +115,8 @@ Noncontiguous multi-slice batching is an optional optimization only after its co
 - A second independent N=44 seed strictly solves/replays in 529.75 seconds test time (548.20 seconds wall), with 1,522,728,960-byte maximum RSS and zero swaps. Full N=44 evidence is now 2/2; the much higher seed-dependent peak reinforces finite-resource caveats.
 - A fresh full-project gate passes after compact effects: generated frontend check, accessibility/privacy smoke, workspace all-feature Clippy, workspace tests, wasm32 build, release workspace build, Tauri check, and worker syntax. Two fresh reviewers found no solver blocker/high/medium issue; their frontend findings (stale worker correlation, empty MIT file, and stale documentation) were fixed.
 - The exact final project gate passes again after those frontend fixes. Provenance is still required before deleting generation classes, because shortest-word dedup erases alternate origins; no class is deleted in this release. Frontier expansion stops at N=44 because the second seed's 1.52 GB peak makes an N=48 probe poor release-value per resource cost. The advertised N=11 product ceiling remains unchanged.
+- Desktop runtime follow-up found two integration gaps that native unit tests could not expose: production center timing used `std::time::Instant`, which traps on `wasm32-unknown-unknown`, and a six-turn N=11 state made from unrelated bare inner slices reached the 290-second fallback deadline. Center timing now uses `web_time`; a generated-WASM Node smoke executes sticker-only 4×4 reduction plus independent replay on every desktop CI OS.
+- Desktop 4×4–11×11 now routes sticker colors to native Tauri `solve_stickers`/`cancel_solve` commands. Automatic large-cube challenges use standard contiguous wide turns from either face, matching the advertised release corpus rather than arbitrary unrelated bare slices. The native sticker-only N=11 wide-turn gate solves and replays in 10.93 seconds test time, and CI runs it on macOS, Windows, and Linux.
 
 ## Safety gates before lifting the app’s N=11 solve ceiling
 

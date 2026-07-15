@@ -14,6 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INDEX = ROOT / "web" / "index.html"
 WORKER = ROOT / "web" / "solver-worker.js"
+LICENSE = ROOT / "LICENSE"
+WASM_LICENSE = ROOT / "crates" / "cube_wasm" / "LICENSE"
 
 
 class AuditParser(HTMLParser):
@@ -60,6 +62,8 @@ def main() -> int:
     parser = AuditParser()
     parser.feed(html)
 
+    require(LICENSE.read_bytes() == WASM_LICENSE.read_bytes(), "WASM package license must match root MIT license")
+
     require(parser.tag_counts.get("main") == 1, "generated page must have one <main>")
     require(parser.tag_counts.get("header") == 1, "generated page must have one <header>")
     require(not parser.external_resources, f"desktop UI must be offline-only: {parser.external_resources}")
@@ -81,6 +85,15 @@ def main() -> int:
         "_solveDispatch",
         "jobId:self._solveJobId",
         "self._worker !== w",
+        "core.invoke('solve_stickers'",
+        "invoke('cancel_solve'",
+        "requestToken:requestToken",
+        "Number(v) > SOLVE_MAX_N",
+        "data-reduction-elapsed aria-hidden",
+        "Native reduction is active",
+        "Progress percentages are intentionally omitted",
+        "nativeCore() ? 11 : 5",
+        "Math.floor(N/2)",
         "e.ctrlKey || e.metaKey || e.altKey",
         "role=\"tab\"",
     ):
@@ -94,7 +107,7 @@ def main() -> int:
     node_check(module, ".mjs")
     node_check(worker, ".mjs")
 
-    print("frontend smoke passed: structure, accessibility, offline assets, JS syntax, worker privacy")
+    print("frontend smoke passed: structure, accessibility, offline assets, JS syntax, worker/native privacy")
     return 0
 
 

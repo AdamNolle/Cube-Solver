@@ -36,6 +36,7 @@ use super::{apply_all, commutator, conjugate, is_center_cell, slice_from};
 use cube_core::{Color, CubeSize, CubeState, Face, Move, StickerCube};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use web_time::Instant;
 
 type Cell = (Face, usize, usize);
 
@@ -1190,7 +1191,7 @@ pub fn solve_centers(cube: &mut StickerCube) -> Vec<Move> {
     }
     moves.extend(orient_fixed_centers(cube));
 
-    let library_started = std::time::Instant::now();
+    let library_started = Instant::now();
     let lib = library(n);
     let library_elapsed = library_started.elapsed();
     let dbg = std::env::var("RDBG").is_ok();
@@ -1217,7 +1218,7 @@ pub fn solve_centers(cube: &mut StickerCube) -> Vec<Move> {
             return moves;
         }
         let w = order[fi];
-        let face_started = std::time::Instant::now();
+        let face_started = Instant::now();
         let want = w.color();
         let mut frozen: HashSet<Cell> = HashSet::new();
         for &ff in &order[..fi] {

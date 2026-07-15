@@ -51,8 +51,20 @@ jobs:
         with:
           tool: wasm-pack,tauri-cli
 
-      # Note: `cargo tauri build` runs the WASM build itself via beforeBuildCommand
-      # in tauri.conf.json, so no separate wasm-pack step is needed here.
+      # A wasm32 compile cannot catch browser-runtime traps (for example unsupported
+      # clocks). Execute a sticker-only reduction and independent replay in Node on
+      # every desktop OS before packaging.
+      - name: Build and runtime-smoke the browser WASM
+        run: |
+          wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm
+          node tools/wasm-runtime-smoke.mjs
+
+      - name: Native 11x11 sticker-state reduction gate
+        timeout-minutes: 15
+        run: >-
+          cargo test --release -p cube_wasm --lib
+          tests::native_n11_sticker_entrypoint_solves_and_replays
+          -- --ignored --exact --nocapture
 
       # Lint the (separate-workspace) Tauri shell once; deps are present on Linux.
       - name: Lint the Tauri shell

@@ -58,6 +58,16 @@ pub fn warm_solver() {
     with_kociemba(|_| {});
 }
 
+fn reduction_time_limit(n: usize) -> Duration {
+    if n <= 5 {
+        Duration::from_secs(28)
+    } else if n <= 8 {
+        Duration::from_secs(115)
+    } else {
+        Duration::from_secs(290)
+    }
+}
+
 /// A tiny deterministic RNG (xorshift64*) so scrambles are reproducible by seed
 /// without pulling OS entropy.
 struct Rng(u64);
@@ -298,20 +308,21 @@ impl CubeLab {
     /// `solve` falls back to the legacy engine race). Solves a CLONE — `solve_reduction`
     /// mutates its cube to solved — so `self.cube` stays scrambled for the animation.
     fn try_reduction(&mut self) -> Option<String> {
-        let original = self.cube.clone();
-        let mut work = original.clone();
         // Finish before the browser's worker watchdog so timeout can unwind through
         // reduction loops cleanly; worker termination remains the hard-stop backstop.
-        let internal_limit = if self.n <= 5 {
-            std::time::Duration::from_secs(28)
-        } else if self.n <= 8 {
-            std::time::Duration::from_secs(115)
-        } else {
-            std::time::Duration::from_secs(290)
-        };
-        let control = cube_solver::reduction::ReductionControl::with_timeout(internal_limit);
+        let control =
+            cube_solver::reduction::ReductionControl::with_timeout(reduction_time_limit(self.n));
+        self.try_reduction_with_control(&control)
+    }
+
+    fn try_reduction_with_control(
+        &mut self,
+        control: &cube_solver::reduction::ReductionControl,
+    ) -> Option<String> {
+        let original = self.cube.clone();
+        let mut work = original.clone();
         let solution = with_kociemba(|s| {
-            cube_solver::reduction::solve_reduction_with_control(&mut work, s, &control)
+            cube_solver::reduction::solve_reduction_with_control(&mut work, s, control)
         })
         .ok()?;
         if !work.is_solved() {
@@ -487,6 +498,37 @@ impl CubeLab {
         } else {
             false
         }
+    }
+}
+
+/// Native desktop entry point for the same sticker-only reduction boundary used by
+/// the Web Worker. Tauri owns the control handle so Cancel can cooperatively stop
+/// CPU work instead of merely ignoring a stale result.
+#[cfg(not(target_arch = "wasm32"))]
+pub use cube_solver::reduction::ReductionControl as NativeReductionControl;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn native_reduction_control(n: usize) -> NativeReductionControl {
+    NativeReductionControl::with_timeout(reduction_time_limit(n))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn solve_reduction_sticker_state(
+    n: usize,
+    colors: &[u8],
+    control: &NativeReductionControl,
+) -> Result<String, String> {
+    if !(4..=11).contains(&n) {
+        return Err("native reduction supports 4x4 through 11x11".to_string());
+    }
+    let mut lab = CubeLab::new(n);
+    if !lab.load_face_colors(colors) {
+        return Err("invalid or incomplete sticker state".to_string());
+    }
+    match lab.try_reduction_with_control(control) {
+        Some(result) => Ok(result),
+        None if !control.should_continue() => Err("solve cancelled or timed out".to_string()),
+        None => Err("no replay-verified solution was found".to_string()),
     }
 }
 
@@ -949,6 +991,73 @@ mod tests {
             }
             assert!(lab.is_solved(), "n={n} reduction solution did not solve");
         }
+    }
+
+    #[test]
+    fn native_sticker_entrypoint_solves_and_replays() {
+        let n = 4;
+        let mut source = CubeLab::new(n);
+        for (axis, layer, dir) in [(0, 1, 1), (1, 3, -1), (2, 0, 1)] {
+            source.apply_design_move(axis, layer, dir);
+        }
+        let colors = source.face_colors(n);
+        let control = native_reduction_control(n);
+        let json = solve_reduction_sticker_state(n, &colors, &control).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(result["winner"], "reduction");
+
+        let mut replay = CubeLab::new(n);
+        assert!(replay.load_face_colors(&colors));
+        for mv in result["moves"].as_array().unwrap() {
+            replay.apply_design_move(
+                mv["axis"].as_u64().unwrap() as u8,
+                mv["layer"].as_u64().unwrap() as usize,
+                mv["dir"].as_i64().unwrap() as i32,
+            );
+        }
+        assert!(replay.is_solved());
+
+        let cancelled = native_reduction_control(n);
+        cancelled.cancel();
+        assert_eq!(
+            solve_reduction_sticker_state(n, &colors, &cancelled),
+            Err("solve cancelled or timed out".to_string())
+        );
+    }
+
+    #[test]
+    #[ignore = "desktop 11x11 native reduction release gate; run explicitly"]
+    fn native_n11_sticker_entrypoint_solves_and_replays() {
+        let n = 11;
+        let mut source = CubeLab::new(n);
+        for (axis, start, end, dir) in [
+            (0, 0, 2, 1),
+            (1, 9, 10, -1),
+            (2, 0, 3, 1),
+            (0, 8, 10, -1),
+            (1, 0, 1, 1),
+            (2, 9, 10, -1),
+        ] {
+            for layer in start..=end {
+                source.apply_design_move(axis, layer, dir);
+            }
+        }
+        let colors = source.face_colors(n);
+        let control = native_reduction_control(n);
+        let json = solve_reduction_sticker_state(n, &colors, &control).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(result["winner"], "reduction");
+
+        let mut replay = CubeLab::new(n);
+        assert!(replay.load_face_colors(&colors));
+        for mv in result["moves"].as_array().unwrap() {
+            replay.apply_design_move(
+                mv["axis"].as_u64().unwrap() as u8,
+                mv["layer"].as_u64().unwrap() as usize,
+                mv["dir"].as_i64().unwrap() as i32,
+            );
+        }
+        assert!(replay.is_solved());
     }
 
     /// The depth-scaled budget must crack deeper 3×3 scrambles (the "auto-stronger

@@ -5,9 +5,11 @@
   "identifier": "io.github.adamnolle.cubesolver",
   "build": {
     "frontendDist": "../web",
+    "beforeDevCommand": "wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm || wasm-pack build ../crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm",
     "beforeBuildCommand": "wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm || wasm-pack build ../crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Cube Solver — N×N Solver Studio",
