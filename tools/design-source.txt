@@ -665,6 +665,26 @@ class Component extends DCLogic {
     return axis === 0 ? new T.Vector3(1, 0, 0) : axis === 1 ? new T.Vector3(0, 1, 0) : new T.Vector3(0, 0, 1);
   }
 
+  // Rotate lattice indices exactly instead of rounding rotated world positions.
+  // On even cubes the legal coordinates are half-step offsets; rounding them to
+  // integer step multiples makes cubies drift, collide, and eventually fly apart.
+  rotatedIdx(idx, m) {
+    const hi = this.N - 1;
+    const [x, y, z] = idx;
+    if (m.axis === 0) return m.dir > 0 ? [x, hi - z, y] : [x, z, hi - y];
+    if (m.axis === 1) return m.dir > 0 ? [z, y, hi - x] : [hi - z, y, x];
+    return m.dir > 0 ? [hi - y, x, z] : [y, hi - x, z];
+  }
+
+  positionForIdx(idx) {
+    const T = window.THREE;
+    return new T.Vector3(
+      (idx[0] - this.half) * this.step,
+      (idx[1] - this.half) * this.step,
+      (idx[2] - this.half) * this.step,
+    );
+  }
+
   startMove(m) {
     const T = window.THREE;
     const sel = this.cubies.filter(c => c.mesh.userData.idx[m.axis] === m.layer);
@@ -695,18 +715,11 @@ class Component extends DCLogic {
     const a = this.activeMove;
     const qMove = new T.Quaternion().setFromAxisAngle(this.axisVec(a.m.axis), a.m.dir * Math.PI / 2);
     a.sel.forEach(c => {
-      const np = c._p0.clone().applyQuaternion(qMove);
-      np.x = Math.round(np.x / this.step) * this.step;
-      np.y = Math.round(np.y / this.step) * this.step;
-      np.z = Math.round(np.z / this.step) * this.step;
-      c.mesh.position.copy(np);
+      const nextIdx = this.rotatedIdx(c.mesh.userData.idx, a.m);
+      c.mesh.position.copy(this.positionForIdx(nextIdx));
       c.mesh.quaternion.copy(qMove.clone().multiply(c._q0));
       this.cubeGroup.add(c.mesh);
-      c.mesh.userData.idx = [
-        Math.round(np.x / this.step + this.half),
-        Math.round(np.y / this.step + this.half),
-        Math.round(np.z / this.step + this.half),
-      ];
+      c.mesh.userData.idx = nextIdx;
     });
     this.cubeGroup.remove(a.pivot);
     this.activeMove = null;
@@ -717,17 +730,10 @@ class Component extends DCLogic {
     const sel = this.cubies.filter(c => c.mesh.userData.idx[m.axis] === m.layer);
     const qMove = new T.Quaternion().setFromAxisAngle(this.axisVec(m.axis), m.dir * Math.PI / 2);
     sel.forEach(c => {
-      const np = c.mesh.position.clone().applyQuaternion(qMove);
-      np.x = Math.round(np.x / this.step) * this.step;
-      np.y = Math.round(np.y / this.step) * this.step;
-      np.z = Math.round(np.z / this.step) * this.step;
-      c.mesh.position.copy(np);
+      const nextIdx = this.rotatedIdx(c.mesh.userData.idx, m);
+      c.mesh.position.copy(this.positionForIdx(nextIdx));
       c.mesh.quaternion.premultiply(qMove);
-      c.mesh.userData.idx = [
-        Math.round(np.x / this.step + this.half),
-        Math.round(np.y / this.step + this.half),
-        Math.round(np.z / this.step + this.half),
-      ];
+      c.mesh.userData.idx = nextIdx;
     });
   }
 

@@ -676,6 +676,26 @@ class Component extends DCLogic {
     return axis === 0 ? new T.Vector3(1, 0, 0) : axis === 1 ? new T.Vector3(0, 1, 0) : new T.Vector3(0, 0, 1);
   }
 
+  // Rotate lattice indices exactly instead of rounding rotated world positions.
+  // On even cubes the legal coordinates are half-step offsets; rounding them to
+  // integer step multiples makes cubies drift, collide, and eventually fly apart.
+  rotatedIdx(idx, m) {
+    const hi = this.N - 1;
+    const [x, y, z] = idx;
+    if (m.axis === 0) return m.dir > 0 ? [x, hi - z, y] : [x, z, hi - y];
+    if (m.axis === 1) return m.dir > 0 ? [z, y, hi - x] : [hi - z, y, x];
+    return m.dir > 0 ? [hi - y, x, z] : [y, hi - x, z];
+  }
+
+  positionForIdx(idx) {
+    const T = window.THREE;
+    return new T.Vector3(
+      (idx[0] - this.half) * this.step,
+      (idx[1] - this.half) * this.step,
+      (idx[2] - this.half) * this.step,
+    );
+  }
+
   startMove(m) {
     const T = window.THREE;
     const sel = this.cubies.filter(c => c.mesh.userData.idx[m.axis] === m.layer);
@@ -706,18 +726,11 @@ class Component extends DCLogic {
     const a = this.activeMove;
     const qMove = new T.Quaternion().setFromAxisAngle(this.axisVec(a.m.axis), a.m.dir * Math.PI / 2);
     a.sel.forEach(c => {
-      const np = c._p0.clone().applyQuaternion(qMove);
-      np.x = Math.round(np.x / this.step) * this.step;
-      np.y = Math.round(np.y / this.step) * this.step;
-      np.z = Math.round(np.z / this.step) * this.step;
-      c.mesh.position.copy(np);
+      const nextIdx = this.rotatedIdx(c.mesh.userData.idx, a.m);
+      c.mesh.position.copy(this.positionForIdx(nextIdx));
       c.mesh.quaternion.copy(qMove.clone().multiply(c._q0));
       this.cubeGroup.add(c.mesh);
-      c.mesh.userData.idx = [
-        Math.round(np.x / this.step + this.half),
-        Math.round(np.y / this.step + this.half),
-        Math.round(np.z / this.step + this.half),
-      ];
+      c.mesh.userData.idx = nextIdx;
     });
     this.cubeGroup.remove(a.pivot);
     this.activeMove = null;
@@ -728,17 +741,10 @@ class Component extends DCLogic {
     const sel = this.cubies.filter(c => c.mesh.userData.idx[m.axis] === m.layer);
     const qMove = new T.Quaternion().setFromAxisAngle(this.axisVec(m.axis), m.dir * Math.PI / 2);
     sel.forEach(c => {
-      const np = c.mesh.position.clone().applyQuaternion(qMove);
-      np.x = Math.round(np.x / this.step) * this.step;
-      np.y = Math.round(np.y / this.step) * this.step;
-      np.z = Math.round(np.z / this.step) * this.step;
-      c.mesh.position.copy(np);
+      const nextIdx = this.rotatedIdx(c.mesh.userData.idx, m);
+      c.mesh.position.copy(this.positionForIdx(nextIdx));
       c.mesh.quaternion.premultiply(qMove);
-      c.mesh.userData.idx = [
-        Math.round(np.x / this.step + this.half),
-        Math.round(np.y / this.step + this.half),
-        Math.round(np.z / this.step + this.half),
-      ];
+      c.mesh.userData.idx = nextIdx;
     });
   }
 
@@ -1216,6 +1222,7 @@ class Component extends DCLogic {
     const origReset = inst.resetSolved ? inst.resetSolved.bind(inst) : null;
     const origSetN = inst.setN ? inst.setN.bind(inst) : null;
     const origReplay = inst.replay ? inst.replay.bind(inst) : null;
+    const origSetView = inst.setView ? inst.setView.bind(inst) : null;
     const origBuildCube = inst.buildCube ? inst.buildCube.bind(inst) : null;
     const origFinalizeMove = inst.finalizeMove ? inst.finalizeMove.bind(inst) : null;
 
@@ -1349,14 +1356,26 @@ class Component extends DCLogic {
       // Mirror into the solver's cube only when it can actually solve it (N<=SOLVE_MAX_N).
       if (solvable){ this.lab.reset(); for (const m of this.lastScramble) this.lab.apply_design_move(m.axis, m.layer, m.dir); }
       this.queue = []; this.activeMove = null;
-      this.movesDone = depth; this.totalMoves = depth;
+      this.movesDone = depth; this.totalMoves = depth; this.solveProgress = 0;
       this.phase = 'idle'; this.busy = false; this.scrambled = true;
+      if (this.setSolvedPct) this.setSolvedPct(0);
       if (this.resetLanes) this.resetLanes();
       if (this.ui && this.ui.status) this.ui.status.textContent = 'Scrambled — ready to solve';
       if (this.ui && this.ui.count) this.ui.count.style.display = 'none';
       if (this.ui && this.ui.move) this.ui.move.style.display = 'none';
       if (this.syncControls) this.syncControls();
     };
+
+    // A user can click Swarm during the brief async WASM boot window, when the
+    // authored scramble method is still installed. Reconstruct that exact target
+    // state in CubeLab before any post-wire solve reads sticker colours.
+    function syncLabFromVisibleScramble(self){
+      if (!self.lab) return;
+      self.lab.set_size(self.n);
+      self.lab.reset();
+      if (self.scrambled) (self.lastScramble||[]).forEach(function(m){ self.lab.apply_design_move(m.axis, m.layer, m.dir); });
+    }
+    syncLabFromVisibleScramble(inst);
 
     // Mark all race lanes as a visual playback (no real search happened).
     function setLanesVisual(self){
@@ -1766,6 +1785,7 @@ class Component extends DCLogic {
       clearTimeout(this._solveWatchdog);
       clearTimeout(this._workerLoadTimer);
       clearTimeout(this._fallbackTimer);
+      clearTimeout(this._swarmAutoStartTimer);
       clearInterval(this._solveHeartbeat);
       if (this._solvePending && this._solveDispatch === 'native' && nativeCore()){
         nativeCore().invoke('cancel_solve', { requestToken:this._solveRequestToken }).catch(function(){});
@@ -1844,6 +1864,7 @@ class Component extends DCLogic {
         this.swarmLab = null;
         if (grid) grid.style.display = 'none';
         var n = this.n||3, telem = this._lastSolveTelemetry;
+        var replaying = !!(this.busy && this.phase === 'solving' && telem && telem.n === n && telem.verified);
         if (n > SOLVE_MAX_N){
           if (note) note.innerHTML = 'This size is <b>visualization-only</b> in the current platform. No search or reduction progress is fabricated.';
           if (liveEl && liveEl.textContent !== 'Visualization mode — choose a supported size for live solving') liveEl.textContent = 'Visualization mode — choose a supported size for live solving';
@@ -1855,6 +1876,7 @@ class Component extends DCLogic {
           msg.style.display = 'block';
           var stateKey = n > SOLVE_MAX_N ? ('visual:'+n+':'+SOLVE_MAX_N) :
             this._solvePending ? ('active:'+n+':'+this._solveDispatch) :
+            replaying ? ('replay:'+n+':'+telem.moveCount) :
             telem && telem.n === n && telem.verified ? ('verified:'+n+':'+telem.moveCount+':'+Math.round(telem.elapsedMs)) :
             telem && telem.n === n ? ('failed:'+n+':'+String(telem.error)) : ('ready:'+n);
           if (msg._telemetryState !== stateKey){
@@ -1867,18 +1889,30 @@ class Component extends DCLogic {
               msg.innerHTML = '<div style="display:flex;align-items:center;gap:9px;color:#1573E6;"><span style="width:10px;height:10px;border-radius:50%;background:#1573E6;box-shadow:0 0 0 5px rgba(21,115,230,.12);"></span><b>'+
                 (this._solveDispatch === 'native' ? 'Native reduction is active' : 'WASM solver is active') +
                 '</b></div><div style="font-size:22px;font-weight:650;color:#262622;margin-top:12px;">'+n+'×'+n+' · <span data-reduction-elapsed aria-hidden="true">0s</span></div>' + pipeline +
-                '<div style="font-size:12px;color:#6F756A;">Working from '+(6*n*n).toLocaleString()+' visible sticker colours. Progress percentages are intentionally omitted because the reduction stages have data-dependent costs. Cancel remains available in Studio.</div>';
+                '<div style="font-size:12px;color:#6F756A;">Working from '+(6*n*n).toLocaleString()+' visible sticker colours. Progress percentages are intentionally omitted because the reduction stages have data-dependent costs.</div>'+
+                '<button type="button" data-reduction-cancel style="margin-top:16px;padding:9px 13px;border:1px solid #E6C9C9;border-radius:10px;background:#FCF1F1;color:#A23B3B;font-weight:600;cursor:pointer;">Cancel reduction</button>';
+            } else if (replaying){
+              msg.innerHTML = '<div style="color:#1B8A45;font-weight:650;">✓ Verified solution is replaying</div><div style="font-size:22px;font-weight:650;color:#262622;margin-top:10px;">'+telem.moveCount+' moves · '+elapsedLabel(telem.elapsedMs)+'</div>' + pipeline +
+                '<div data-replay-moves style="font-size:12px;color:#6F756A;">0 / '+this.totalMoves+' animation steps</div>'+
+                '<button type="button" data-reduction-cancel style="margin-top:16px;padding:9px 13px;border:1px solid #E6C9C9;border-radius:10px;background:#FCF1F1;color:#A23B3B;font-weight:600;cursor:pointer;">Cancel playback</button>';
             } else if (telem && telem.n === n && telem.verified){
               msg.innerHTML = '<div style="color:#1B8A45;font-weight:650;">✓ Replay-verified reduction solve</div><div style="font-size:22px;font-weight:650;color:#262622;margin-top:10px;">'+telem.moveCount+' moves · '+elapsedLabel(telem.elapsedMs)+'</div>' + pipeline +
                 '<div style="font-size:12px;color:#6F756A;">The returned legal moves were independently replayed to solved before animation began.</div>';
             } else if (telem && telem.n === n && !telem.verified){
               msg.innerHTML = '<div style="color:#A35A24;font-weight:650;">Reduction stopped without a verified path</div><div style="margin-top:8px;font-size:12px;color:#6F756A;">See the Studio status for details, then retry or choose a smaller cube.</div>' + pipeline;
             } else {
-              msg.innerHTML = '<b>'+n+'×'+n+' uses deterministic reduction, not evolutionary search.</b><div style="margin-top:7px;">Scramble and press Solve in Studio. This panel will show live elapsed activity, the real reduction pipeline, and replay-verified results.</div>' + pipeline;
+              msg.innerHTML = '<b>'+n+'×'+n+' uses deterministic reduction, not evolutionary search.</b><div style="margin-top:7px;">Start it here to watch live elapsed activity, the real reduction pipeline, and replay-verified results.</div>' + pipeline +
+                '<button type="button" data-reduction-start style="margin-top:8px;padding:10px 14px;border:0;border-radius:10px;background:#161514;color:#fff;font-weight:600;cursor:pointer;">Start reduction</button>';
             }
           }
           var timer=msg.querySelector('[data-reduction-elapsed]');
           if (timer) timer.textContent=elapsedLabel(this._solveElapsedMs||0);
+          var replay=msg.querySelector('[data-replay-moves]');
+          if (replay) replay.textContent=(this.movesDone||0).toLocaleString()+' / '+(this.totalMoves||0).toLocaleString()+' animation steps';
+          var start=msg.querySelector('[data-reduction-start]');
+          if (start && !start._wired){ start._wired=true; var self=this; start.addEventListener('click', function(){ if (!self._solvePending && !self.busy) self.solve(); }); }
+          var cancel=msg.querySelector('[data-reduction-cancel]');
+          if (cancel && !cancel._wired){ cancel._wired=true; var self2=this; cancel.addEventListener('click', function(){ cancelSolve(self2); }); }
         }
         return;
       }
@@ -2011,6 +2045,32 @@ class Component extends DCLogic {
     // standalone browser build stays at the WASM-runtime-verified 5×5 ceiling.
     var SOLVE_MAX_N = nativeCore() ? 11 : 5, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
 
+    // Entering Swarm should visibly do work. Small cubes already launch genuine
+    // evolutionary trials; supported large cubes auto-start truthful reduction.
+    // Polling while an early, pre-WASM visual scramble finishes closes the mount
+    // race where the user opens Swarm before wireRealSolver() is installed.
+    function scheduleSwarmReduction(self){
+      clearTimeout(self._swarmAutoStartTimer);
+      self._swarmAutoStartTimer=null;
+      if (self.view !== 'swarm' || (self.n||3) <= SWARM_MAX || (self.n||3) > SOLVE_MAX_N || self._solvePending || (self.busy && self.phase === 'solving')) return;
+      var attempt=function(){
+        self._swarmAutoStartTimer=null;
+        if (self.view !== 'swarm' || (self.n||3) <= SWARM_MAX || (self.n||3) > SOLVE_MAX_N || self._solvePending || (self.busy && self.phase === 'solving')) return;
+        if (self.busy){
+          if (self.phase === 'scrambling') self._swarmAutoStartTimer=setTimeout(attempt, 120);
+          return;
+        }
+        if (!self.scrambled) self.scramble();
+        if (self.busy){ self._swarmAutoStartTimer=setTimeout(attempt, 120); return; }
+        if (self.scrambled && !self._solvePending) self.solve();
+      };
+      self._swarmAutoStartTimer=setTimeout(attempt, 120);
+    }
+    if (origSetView) inst.setView = function(v){
+      origSetView(v);
+      scheduleSwarmReduction(this);
+    };
+
     // Make the "Solver Race" panel honest about which engine actually runs:
     //   • 2×2 — three real engines race (meet-in-the-middle, beam, island genetic);
     //   • 3×3 — the two-phase (Kociemba) solver, shown as one near-optimal lane with
@@ -2126,6 +2186,18 @@ class Component extends DCLogic {
       if (sd2) sd2.addEventListener('input', function(){ setTimeout(function(){ refreshSolvability(self); }, 0); });
       refreshSolvability(self);
     })(inst);
+
+    // componentDidMount starts before WASM finishes loading. Rebuild the wall
+    // once the real Swarm constructor is available so an early WebGL failure or
+    // mount race can never leave the Swarm tab blank/inert.
+    try { if (inst.initSwarm) inst.initSwarm(); } catch(e){ console.warn('swarm remount failed', e); }
+    function ensureAnimationLoop(self){
+      if (self._raf || !window.THREE || !self.loop) return;
+      if (!self.clock) self.clock = new window.THREE.Clock();
+      self.loop();
+    }
+    ensureAnimationLoop(inst);
+    scheduleSwarmReduction(inst);
   }
 
   function markLive(){}
@@ -2157,10 +2229,28 @@ class Component extends DCLogic {
           console.warn('WebGL unavailable — 3D view disabled; the solver still works.', e);
           const T = window.THREE; this._noWebGL = true;
           this.renderer = this.renderer || { render:function(){}, setSize:function(){}, setPixelRatio:function(){}, domElement: document.createElement('canvas') };
-          if (T){ this.scene = this.scene || new T.Scene(); this.camera = this.camera || new T.PerspectiveCamera(50,1,0.1,100); this.cubeGroup = this.cubeGroup || new T.Group(); }
+          if (T){ this.scene = this.scene || new T.Scene(); this.camera = this.camera || new T.PerspectiveCamera(50,1,0.1,100); this.cubeGroup = this.cubeGroup || new T.Group(); this.clock = this.clock || new T.Clock(); }
           const stage = this.root && this.root.querySelector('[data-stage]');
           if (stage){ const m=document.createElement('div'); m.style.cssText='position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;color:#8C887F;font-size:13px;padding:24px;'; m.innerHTML='3D view unavailable (no WebGL on this system).<br>Scramble &amp; Solve still work.'; stage.appendChild(m); }
         }
+      };
+    }
+    // componentDidMount calls buildCube immediately after initThree. If renderer
+    // creation failed, the authored materials do not exist yet; skip only the 3D
+    // build so mount, WASM loading, controls, and Swarm can still complete.
+    function recoverNoWebGLBuild(self, n){
+      self.N = n; self.mode = 'cubie';
+      self.cubies = []; self.activeMove = null;
+      if (self.updateBadges) self.updateBadges();
+    }
+    function useTextureBuildWithoutWebGL(self, n){ return n > (self.CUBIE_MAX || 11); }
+    if (typeof inst.buildCube === 'function'){
+      const origMountBuildCube = inst.buildCube.bind(inst);
+      inst.buildCube = function(n){
+        // The texture path is renderer-independent and initializes texFaces,
+        // which scrambleTexture/advanceTexture require even when rendering is stubbed.
+        if (!this._noWebGL || useTextureBuildWithoutWebGL(this, n)) return origMountBuildCube(n);
+        recoverNoWebGLBuild(this, n);
       };
     }
     if (typeof inst.componentDidMount === 'function') inst.componentDidMount();
