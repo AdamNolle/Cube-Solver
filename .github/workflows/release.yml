@@ -244,7 +244,8 @@ jobs:
           rm -rf /tmp/cube-deb /tmp/cube-rpm squashfs-root
           mkdir -p /tmp/cube-deb /tmp/cube-rpm
           dpkg-deb -x "${debs[0]}" /tmp/cube-deb
-          (cd /tmp/cube-rpm && rpm2cpio "${rpms[0]}" | cpio -idm --quiet)
+          rpm_path="$(realpath "${rpms[0]}")"
+          (cd /tmp/cube-rpm && rpm2cpio "$rpm_path" | cpio -idm --quiet)
           deb_binary="$(find /tmp/cube-deb -type f -name cube-solver -perm -111 -print -quit)"
           rpm_binary="$(find /tmp/cube-rpm -type f -name cube-solver -perm -111 -print -quit)"
           [[ -n "$deb_binary" && -n "$rpm_binary" ]] || { echo 'deb/rpm payload missing executable' >&2; exit 1; }
