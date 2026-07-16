@@ -17,15 +17,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Per-OS bundle targets — avoids the flaky Linux AppImage bundler.
+          # Release-facing native formats. Linux's deb is the validated input used
+          # by release.yml to produce the sandboxed Flatpak bundle.
           - os: macos-latest
-            bundles: app,dmg
+            bundles: dmg
           - os: ubuntu-22.04
             bundles: deb
           - os: windows-latest
-            bundles: msi,nsis
+            bundles: nsis
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -56,7 +62,7 @@ jobs:
       # every desktop OS before packaging.
       - name: Build and runtime-smoke the browser WASM
         run: |
-          wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm
+          python tools/build-wasm.py
           node tools/wasm-runtime-smoke.mjs
 
       - name: Native 11x11 sticker-state reduction gate

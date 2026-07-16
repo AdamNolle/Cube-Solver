@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.adamnolle.cubesolver</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <name>Cube Solver</name>
+  <summary>Replay-verified N×N cube solver studio</summary>
+  <developer_name>Adam Nolle</developer_name>
+  <description>
+    <p>Build random or custom 2×2–11×11 scrambles, solve from the visible sticker state, and independently replay every accepted solution.</p>
+    <p>Explore live evolutionary trials on small cubes and truthful deterministic-reduction telemetry on larger supported cubes.</p>
+  </description>
+  <launchable type="desktop-id">io.github.adamnolle.cubesolver.desktop</launchable>
+  <url type="homepage">https://github.com/AdamNolle/Cube-Solver</url>
+  <url type="bugtracker">https://github.com/AdamNolle/Cube-Solver/issues</url>
+  <categories>
+    <category>Education</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-07-14"/>
+  </releases>
+</component>

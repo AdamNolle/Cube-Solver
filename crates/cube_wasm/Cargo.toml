@@ -1,7 +1,6 @@
 [package]
 name = "cube_wasm"
 edition.workspace = true
-license.workspace = true
 version.workspace = true
 description = "WebAssembly bridge for the Cube Solver model and verified solving engines"
 repository = "https://github.com/AdamNolle/Cube-Solver"

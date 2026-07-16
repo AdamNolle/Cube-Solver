@@ -9,7 +9,6 @@ Create a legal scramble, solve from the visible stickers alone, and watch only s
 
 [![CI](https://github.com/AdamNolle/Cube-Solver/actions/workflows/ci.yml/badge.svg)](https://github.com/AdamNolle/Cube-Solver/actions/workflows/ci.yml)
 [![Desktop](https://github.com/AdamNolle/Cube-Solver/actions/workflows/desktop.yml/badge.svg)](https://github.com/AdamNolle/Cube-Solver/actions/workflows/desktop.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/core-Rust-dea584.svg)](https://www.rust-lang.org/)
 
 </div>
@@ -167,6 +166,7 @@ flowchart LR
 ### Prerequisites
 
 - stable Rust,
+- Python 3,
 - the `wasm32-unknown-unknown` target,
 - [`wasm-pack`](https://rustwasm.github.io/wasm-pack/),
 - [Tauri CLI v2](https://v2.tauri.app/start/prerequisites/),
@@ -194,8 +194,7 @@ cargo tauri build
 ### Standalone browser
 
 ```sh
-wasm-pack build crates/cube_wasm --release --target web \
-  --out-dir "$PWD/web/pkg" --out-name cube_wasm
+python3 tools/build-wasm.py
 python3 -m http.server -d web 8000
 ```
 
@@ -254,12 +253,14 @@ Avoid keeping active build trees in a cloud-synchronized folder. Sync tools can 
 
 ## Releases
 
-The project builds native packages for Linux, macOS, and Windows in GitHub Actions. The first `v0.1.0` release is prepared as a **draft** until trusted Apple notarization and Windows publisher-signing credentials are configured.
+The release workflow produces three native desktop downloads:
+
+- Windows x86_64: NSIS setup `.exe`,
+- macOS universal: `.dmg`,
+- Linux x86_64: `.flatpak` bundle using the GNOME 50 runtime.
+
+The first `v0.1.0` release is prepared as a **draft** until trusted Apple notarization and Windows publisher-signing credentials are configured. The Flatpak is a single-file application bundle; Flatpak downloads its declared GNOME runtime from Flathub when needed.
 
 Unsigned development artifacts can be structurally valid and checksum-verified while still triggering Gatekeeper or SmartScreen warnings. Checksums prove file integrity; they do not establish a trusted publisher identity.
 
 See [`docs/RELEASING.md`](docs/RELEASING.md) for artifact contracts, validation steps, signing requirements, and the draft-to-public checklist.
-
-## License
-
-MIT — see [`LICENSE`](LICENSE).

@@ -1,0 +1,37 @@
+app-id: io.github.adamnolle.cubesolver
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: cube-solver
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+modules:
+  - name: cube-solver
+    buildsystem: simple
+    sources:
+      - type: file
+        path: app.deb
+        dest-filename: app.deb
+        only-arches:
+          - x86_64
+      - type: file
+        path: io.github.adamnolle.cubesolver.metainfo.xml
+    build-commands:
+      - mkdir deb-extract && cd deb-extract && ar -x ../app.deb && tar -xf data.tar.*
+      - install -Dm755 deb-extract/usr/bin/cube-solver /app/bin/cube-solver
+      - if test -d deb-extract/usr/lib/cube-solver; then mkdir -p /app/lib/cube-solver; cp -a deb-extract/usr/lib/cube-solver/. /app/lib/cube-solver/; fi
+      - |
+          desktop="$(find deb-extract/usr/share/applications -maxdepth 1 -type f -name '*.desktop' -print -quit)"
+          test -n "$desktop"
+          sed -i 's/^Exec=.*/Exec=cube-solver/; s/^Icon=.*/Icon=io.github.adamnolle.cubesolver/' "$desktop"
+          install -Dm644 "$desktop" /app/share/applications/io.github.adamnolle.cubesolver.desktop
+      - |
+          for icon in $(find deb-extract/usr/share/icons/hicolor -type f -name '*.png'); do
+            relative="${icon#deb-extract/usr/share/icons/hicolor/}"
+            directory="${relative%/*}"
+            install -Dm644 "$icon" "/app/share/icons/hicolor/$directory/io.github.adamnolle.cubesolver.png"
+          done
+      - install -Dm644 io.github.adamnolle.cubesolver.metainfo.xml /app/share/metainfo/io.github.adamnolle.cubesolver.metainfo.xml

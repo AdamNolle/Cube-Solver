@@ -18,11 +18,11 @@
 
 ## Draft artifacts
 
-| Platform | Packages |
+| Platform | Package |
 |---|---|
-| Linux x86_64 | `.deb`, `.rpm`, `.AppImage` |
-| macOS universal | `.app.zip`, `.dmg` |
-| Windows x86_64 | `.msi`, NSIS setup `.exe` |
+| Linux x86_64 | `.flatpak` bundle (GNOME 50 runtime) |
+| macOS universal | `.dmg` |
+| Windows x86_64 | NSIS setup `.exe` |
 
 `SHA256SUMS` covers every installer. `release-manifest.json` binds filenames and hashes to the exact commit and workflow run. GitHub build-provenance attestations are generated for the packages.
 
@@ -32,15 +32,15 @@
 - final generated-WASM execution and independent replay,
 - native N=11 sticker-state solve and replay on every operating system,
 - package metadata and architecture checks,
-- Linux package inspection, AppImage extraction, and Xvfb startup smoke,
-- universal macOS architecture, bundle metadata, DMG verification, and startup smoke,
-- Windows MSI extraction, NSIS inspection, signature-state check, and startup smoke,
-- exact seven-file asset allowlist and verified SHA-256 manifest.
+- Linux Flatpak metadata, sandbox permissions, x86_64 payload, library closure, install, and Xvfb startup smoke,
+- universal macOS architecture, bundle metadata, DMG verification, unsigned-state check, and startup smoke,
+- Windows NSIS inspection, x86_64 payload/version, signature-state check, and startup smoke,
+- exact three-package asset allowlist and verified SHA-256 manifest.
 
 ## Before publishing
 
 - [ ] Configure Developer ID signing and Apple notarization; verify/staple the app and DMG.
-- [ ] Configure Windows Authenticode signing; require `Valid` signatures on MSI and NSIS packages.
+- [ ] Configure Windows Authenticode signing; require a `Valid` signature on the NSIS setup executable.
 - [ ] Add fail-closed signing/notarization steps to the workflow, then replace this draft’s unsigned assets.
 - [ ] Install and manually exercise Studio, custom scramble, Solve, Cancel, Replay, and Swarm on physical Linux, macOS, and Windows machines.
 - [ ] Re-check `SHA256SUMS`, provenance, release notes, and download names.

@@ -9,15 +9,19 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INDEX = ROOT / "web" / "index.html"
 WORKER = ROOT / "web" / "solver-worker.js"
-LICENSE = ROOT / "LICENSE"
+ROOT_LICENSE = ROOT / "LICENSE"
 WASM_LICENSE = ROOT / "crates" / "cube_wasm" / "LICENSE"
+WASM_PACKAGE = ROOT / "web" / "pkg" / "package.json"
 TAURI_CONFIG = ROOT / "src-tauri" / "tauri.conf.json"
+FLATPAK_MANIFEST = ROOT / "packaging" / "flatpak" / "io.github.adamnolle.cubesolver.yml"
+FLATPAK_METAINFO = ROOT / "packaging" / "flatpak" / "io.github.adamnolle.cubesolver.metainfo.xml"
 
 
 class AuditParser(HTMLParser):
@@ -291,7 +295,31 @@ def main() -> int:
     parser = AuditParser()
     parser.feed(html)
 
-    require(LICENSE.read_bytes() == WASM_LICENSE.read_bytes(), "WASM package license must match root MIT license")
+    require(
+        not ROOT_LICENSE.exists() and not WASM_LICENSE.exists(),
+        "repository and WASM package must not contain stale license files",
+    )
+    cargo_manifests = [
+        ROOT / "Cargo.toml",
+        ROOT / "src-tauri" / "Cargo.toml",
+        *sorted((ROOT / "crates").glob("*/Cargo.toml")),
+    ]
+    for manifest in cargo_manifests:
+        manifest_text = manifest.read_text(encoding="utf-8")
+        require(
+            re.search(r"^\s*license(?:\.workspace)?\s*=", manifest_text, re.MULTILINE) is None,
+            f"stale project license metadata in {manifest.relative_to(ROOT)}",
+        )
+    if WASM_PACKAGE.exists():
+        wasm_package = json.loads(WASM_PACKAGE.read_text(encoding="utf-8"))
+        require("license" not in wasm_package, "generated WASM package must not declare a stale project license")
+        require(not list(WASM_PACKAGE.parent.glob("LICENSE*")), "generated WASM package must not retain stale license files")
+    flatpak_manifest = FLATPAK_MANIFEST.read_text(encoding="utf-8")
+    flatpak_component = ET.parse(FLATPAK_METAINFO).getroot()
+    require(flatpak_component.findtext("id") == "io.github.adamnolle.cubesolver", "Flatpak app ID drifted")
+    require(flatpak_component.findtext("project_license") == "LicenseRef-proprietary", "Flatpak must describe the unlicensed app as proprietary")
+    require("runtime-version: '50'" in flatpak_manifest, "Flatpak must use the supported GNOME 50 runtime")
+    require("--share=network" not in flatpak_manifest and "filesystem=home" not in flatpak_manifest, "Flatpak permissions must stay local-only")
     security = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))["app"]["security"]
     require("'unsafe-inline'" in security["csp"].split("style-src", 1)[1].split(";", 1)[0], "inline-heavy authored UI requires style-src unsafe-inline")
     require("style-src" in security.get("dangerousDisableAssetCspModification", []), "Tauri nonce injection must stay disabled for style-src or packaged inline styles are blocked")

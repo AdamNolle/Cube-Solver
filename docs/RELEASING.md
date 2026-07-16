@@ -13,7 +13,8 @@ The same semantic version must appear in:
 
 - `Cargo.toml` under `[workspace.package]`,
 - `src-tauri/Cargo.toml`,
-- `src-tauri/tauri.conf.json`.
+- `src-tauri/tauri.conf.json`,
+- the newest release in `packaging/flatpak/io.github.adamnolle.cubesolver.metainfo.xml`.
 
 The workflow tag is `v` plus that version, for example `v0.1.0`.
 
@@ -30,15 +31,11 @@ The workflow is manual-only and always creates or updates a **draft**. It refuse
 
 ## Artifact contract
 
-A complete draft contains exactly these seven packages:
+A complete draft contains exactly these three packages:
 
 ```text
-Cube-Solver-vX.Y.Z-linux-x86_64.deb
-Cube-Solver-vX.Y.Z-linux-x86_64.rpm
-Cube-Solver-vX.Y.Z-linux-x86_64.AppImage
-Cube-Solver-vX.Y.Z-macos-universal.app.zip
+Cube-Solver-vX.Y.Z-linux-x86_64.flatpak
 Cube-Solver-vX.Y.Z-macos-universal.dmg
-Cube-Solver-vX.Y.Z-windows-x86_64.msi
 Cube-Solver-vX.Y.Z-windows-x86_64-setup.exe
 ```
 
@@ -64,24 +61,29 @@ The assembly job rejects missing, duplicate, empty, symlinked, or unexpected pac
 
 ### Linux
 
-- `.deb` version and `amd64` architecture,
-- `.rpm` version and `x86_64` architecture,
-- AppImage extraction and executable `AppRun`,
-- AppImage startup under Xvfb.
+- Tauri’s intermediate `.deb` version, architecture, payload, and startup,
+- Flatpak AppStream and desktop metadata,
+- GNOME 50 runtime availability,
+- x86_64 ELF payload and complete sandbox library resolution,
+- no network or home-directory sandbox permission,
+- installation from the final `.flatpak` and startup under Xvfb.
+
+A single-file Flatpak contains the application, not the GNOME runtime. Its embedded runtime-repository reference lets Flatpak retrieve that runtime from Flathub when required.
 
 ### macOS
 
 - universal binary contains both `arm64` and `x86_64`,
-- bundle identifier and version,
+- bundle identifier and version in both the build output and mounted DMG,
+- expected unsigned state for the app and DMG,
 - DMG integrity through `hdiutil verify`,
-- application startup.
+- application startup from the mounted DMG.
 
 ### Windows
 
-- unsigned draft explicitly reports `NotSigned`,
-- MSI administrative extraction contains `cube-solver.exe`,
-- NSIS installer can be inspected by 7-Zip,
-- application startup.
+- NSIS setup executable explicitly reports `NotSigned`,
+- installer can be inspected by 7-Zip,
+- silent installation contains an x86_64 `cube-solver.exe` with the expected version,
+- installed application startup.
 
 ## Signing requirements
 
@@ -105,7 +107,7 @@ The DMG must also be signed/notarized according to the selected distribution pro
 
 ### Windows
 
-Provide a protected Authenticode certificate (for example a PFX plus password, or a managed signing service). Both the MSI and NSIS installer must report:
+Provide a protected Authenticode certificate (for example a PFX plus password, or a managed signing service). The NSIS setup executable must report:
 
 ```powershell
 (Get-AuthenticodeSignature $path).Status -eq 'Valid'
@@ -151,7 +153,8 @@ On each operating system:
 ## Recovery rules
 
 - Never replace assets on a published release.
-- Never reuse a version for a different source commit.
+- Never reuse a published version for a different source commit.
+- An unpublished, undistributed draft may be deleted with its tag and recreated only after an explicit owner decision.
 - If a public artifact is wrong, issue a new patch version.
 - A failed package format fails the whole draft; do not silently omit it.
 - Keep signing secrets in protected GitHub environments, never in pull-request workflows or repository files.

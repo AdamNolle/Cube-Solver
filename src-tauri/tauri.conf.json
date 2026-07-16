@@ -5,8 +5,15 @@
   "identifier": "io.github.adamnolle.cubesolver",
   "build": {
     "frontendDist": "../web",
-    "beforeDevCommand": "wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm || wasm-pack build ../crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm",
-    "beforeBuildCommand": "wasm-pack build crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm || wasm-pack build ../crates/cube_wasm --release --target web --out-dir ../../web/pkg --out-name cube_wasm"
+    "beforeDevCommand": {
+      "script": "python3 tools/build-wasm.py",
+      "cwd": "..",
+      "wait": true
+    },
+    "beforeBuildCommand": {
+      "script": "python3 tools/build-wasm.py",
+      "cwd": ".."
+    }
   },
   "app": {
     "withGlobalTauri": true,

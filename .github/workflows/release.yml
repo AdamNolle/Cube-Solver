@@ -65,13 +65,21 @@ jobs:
           NOTES_FILE="docs/release-notes-${RELEASE_TAG}.md"
           [[ -f "$NOTES_FILE" ]] || { echo "missing release notes: $NOTES_FILE" >&2; exit 1; }
           python3 - "$VERSION" <<'PY'
-          import json, pathlib, re, sys
+          import json, pathlib, re, sys, xml.etree.ElementTree as ET
           expected = sys.argv[1]
           root = pathlib.Path('.')
           tauri = json.loads((root / 'src-tauri/tauri.conf.json').read_text())['version']
           desktop = re.search(r'^version\s*=\s*"([^"]+)"', (root / 'src-tauri/Cargo.toml').read_text(), re.M).group(1)
           workspace = re.search(r'^version\s*=\s*"([^"]+)"', (root / 'Cargo.toml').read_text().split('[workspace.package]', 1)[1], re.M).group(1)
-          versions = {'tauri.conf.json': tauri, 'src-tauri/Cargo.toml': desktop, 'Cargo.toml': workspace}
+          metainfo_root = ET.parse(root / 'packaging/flatpak/io.github.adamnolle.cubesolver.metainfo.xml').getroot()
+          metainfo_release = metainfo_root.find('./releases/release')
+          flatpak = metainfo_release.get('version') if metainfo_release is not None else None
+          versions = {
+              'tauri.conf.json': tauri,
+              'src-tauri/Cargo.toml': desktop,
+              'Cargo.toml': workspace,
+              'Flatpak metainfo': flatpak,
+          }
           wrong = {path: value for path, value in versions.items() if value != expected}
           if wrong:
               raise SystemExit(f'version mismatch: expected {expected}, got {wrong}')
@@ -127,11 +135,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: Linux x86_64
+          - label: Linux Flatpak x86_64
             os: ubuntu-22.04
             artifact: release-linux-x86_64
             target: x86_64-unknown-linux-gnu
-            bundles: deb,rpm,appimage
+            bundles: deb
           - label: macOS universal
             os: macos-14
             artifact: release-macos-universal
@@ -141,7 +149,7 @@ jobs:
             os: windows-2022
             artifact: release-windows-x86_64
             target: x86_64-pc-windows-msvc
-            bundles: msi,nsis
+            bundles: nsis
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     permissions:
@@ -171,9 +179,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cpio curl file libayatana-appindicator3-dev libfuse2 \
-            librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev \
-            patchelf rpm wget xvfb
+            appstream binutils build-essential curl dbus-x11 desktop-file-utils \
+            file flatpak flatpak-builder libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libwebkit2gtk-4.1-dev libxdo-dev patchelf wget xvfb
 
       - name: Cache Rust builds
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -212,74 +220,77 @@ jobs:
         shell: bash
         run: node tools/wasm-runtime-smoke.mjs
 
-      - name: Validate and stage Linux packages
+      - name: Validate the Linux payload and build Flatpak
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
+          APP_ID=io.github.adamnolle.cubesolver
+          FLATPAK_BRANCH=stable
+          RUNTIME_VERSION=50
+          PACK_DIR="$RUNNER_TEMP/flatpak-input"
+          BUNDLE="dist/Cube-Solver-$RELEASE_TAG-linux-x86_64.flatpak"
           mkdir -p dist
           mapfile -t debs < <(find src-tauri/target/${{ matrix.target }}/release/bundle/deb -maxdepth 1 -type f -name '*.deb')
-          mapfile -t rpms < <(find src-tauri/target/${{ matrix.target }}/release/bundle/rpm -maxdepth 1 -type f -name '*.rpm')
-          mapfile -t appimages < <(find src-tauri/target/${{ matrix.target }}/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage')
-          [[ ${#debs[@]} -eq 1 && ${#rpms[@]} -eq 1 && ${#appimages[@]} -eq 1 ]] || {
-            printf 'expected one deb/rpm/AppImage; got %s/%s/%s\n' "${#debs[@]}" "${#rpms[@]}" "${#appimages[@]}" >&2
-            exit 1
-          }
+          [[ ${#debs[@]} -eq 1 ]] || { echo "expected one intermediate deb; got ${#debs[@]}" >&2; exit 1; }
           deb_version="$(dpkg-deb -f "${debs[0]}" Version)"
           deb_arch="$(dpkg-deb -f "${debs[0]}" Architecture)"
-          rpm_version="$(rpm -qp --qf '%{VERSION}' "${rpms[0]}")"
-          rpm_arch="$(rpm -qp --qf '%{ARCH}' "${rpms[0]}")"
-          printf 'package metadata: deb=%s/%s rpm=%s/%s\n' \
-            "$deb_version" "$deb_arch" "$rpm_version" "$rpm_arch"
           [[ "$deb_version" == "$VERSION" ]] || { echo "deb version is $deb_version, expected $VERSION" >&2; exit 1; }
-          [[ "$deb_arch" == "amd64" ]] || { echo "deb architecture is $deb_arch, expected amd64" >&2; exit 1; }
-          [[ "$rpm_version" == "$VERSION" ]] || { echo "rpm version is $rpm_version, expected $VERSION" >&2; exit 1; }
-          [[ "$rpm_arch" == "x86_64" ]] || { echo "rpm architecture is $rpm_arch, expected x86_64" >&2; exit 1; }
-          smoke_binary() {
-            local binary="$1" label="$2" log="/tmp/cube-solver-${2}.log"
-            set +e
-            WEBKIT_DISABLE_COMPOSITING_MODE=1 timeout 12s xvfb-run -a "$binary" >"$log" 2>&1
-            local rc=$?
-            set -e
-            if [[ $rc -ne 124 && $rc -ne 143 ]]; then
-              cat "$log"
-              echo "$label exited during startup smoke (code $rc)" >&2
-              exit 1
-            fi
-          }
-          rm -rf /tmp/cube-deb /tmp/cube-rpm /tmp/cube-rpm.cpio squashfs-root
-          mkdir -p /tmp/cube-deb /tmp/cube-rpm
-          dpkg-deb -x "${debs[0]}" /tmp/cube-deb || { echo 'deb extraction failed' >&2; exit 1; }
-          rpm_path="$(realpath "${rpms[0]}")"
-          set +e
-          rpm2cpio "$rpm_path" > /tmp/cube-rpm.cpio
-          rpm2cpio_rc=$?
-          set -e
-          printf 'rpm2cpio exit status: %s\n' "$rpm2cpio_rc"
-          [[ -s /tmp/cube-rpm.cpio ]] || { echo 'rpm2cpio produced an empty archive' >&2; exit 1; }
-          (cd /tmp/cube-rpm && cpio -idm --quiet < /tmp/cube-rpm.cpio) || { echo 'rpm cpio extraction failed' >&2; exit 1; }
+          [[ "$deb_arch" == amd64 ]] || { echo "deb architecture is $deb_arch, expected amd64" >&2; exit 1; }
+          rm -rf /tmp/cube-deb "$PACK_DIR" flatpak-build flatpak-repo flatpak-install-test
+          mkdir -p /tmp/cube-deb "$PACK_DIR"
+          dpkg-deb -x "${debs[0]}" /tmp/cube-deb
           deb_binary="$(find /tmp/cube-deb -type f -name cube-solver -perm -111 -print -quit)"
-          rpm_binary="$(find /tmp/cube-rpm -type f -name cube-solver -perm -111 -print -quit)"
-          [[ -n "$deb_binary" && -n "$rpm_binary" ]] || { echo 'deb/rpm payload missing executable' >&2; exit 1; }
-          smoke_binary "$deb_binary" deb
-          smoke_binary "$rpm_binary" rpm
-          chmod +x "${appimages[0]}"
-          "${appimages[0]}" --appimage-extract >/dev/null
-          test -x squashfs-root/AppRun
+          [[ -n "$deb_binary" ]] || { echo 'intermediate deb payload is missing cube-solver' >&2; exit 1; }
           set +e
-          APPIMAGE_EXTRACT_AND_RUN=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 \
-            timeout 12s xvfb-run -a "${appimages[0]}" >/tmp/cube-solver-appimage.log 2>&1
+          WEBKIT_DISABLE_COMPOSITING_MODE=1 timeout 12s xvfb-run -a "$deb_binary" >/tmp/cube-solver-deb.log 2>&1
           rc=$?
           set -e
           if [[ $rc -ne 124 && $rc -ne 143 ]]; then
-            cat /tmp/cube-solver-appimage.log
-            echo "AppImage exited during startup smoke (code $rc)" >&2
+            cat /tmp/cube-solver-deb.log
+            echo "intermediate deb exited during startup smoke (code $rc)" >&2
             exit 1
           fi
-          cp "${debs[0]}" "dist/Cube-Solver-$RELEASE_TAG-linux-x86_64.deb"
-          cp "${rpms[0]}" "dist/Cube-Solver-$RELEASE_TAG-linux-x86_64.rpm"
-          cp "${appimages[0]}" "dist/Cube-Solver-$RELEASE_TAG-linux-x86_64.AppImage"
-          file dist/*
+          cp "${debs[0]}" "$PACK_DIR/app.deb"
+          cp packaging/flatpak/io.github.adamnolle.cubesolver.yml "$PACK_DIR/"
+          cp packaging/flatpak/io.github.adamnolle.cubesolver.metainfo.xml "$PACK_DIR/"
+          appstreamcli validate --pedantic --explain "$PACK_DIR/$APP_ID.metainfo.xml"
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak remote-info --user flathub "org.gnome.Platform//$RUNTIME_VERSION" >/dev/null
+          flatpak install --user --noninteractive -y flathub \
+            "org.gnome.Platform//$RUNTIME_VERSION" "org.gnome.Sdk//$RUNTIME_VERSION"
+          flatpak-builder --user --arch=x86_64 --force-clean --disable-rofiles-fuse \
+            --default-branch="$FLATPAK_BRANCH" --repo=flatpak-repo \
+            flatpak-build "$PACK_DIR/io.github.adamnolle.cubesolver.yml"
+          desktop-file-validate "flatpak-build/files/share/applications/$APP_ID.desktop"
+          appstreamcli validate --pedantic --explain "flatpak-build/files/share/metainfo/$APP_ID.metainfo.xml"
+          machine="$(readelf -h flatpak-build/files/bin/cube-solver | awk -F: '/Machine:/{gsub(/^[ \t]+/,"",$2); print $2}')"
+          [[ "$machine" == 'Advanced Micro Devices X86-64' ]] || { echo "unexpected Flatpak payload machine: $machine" >&2; exit 1; }
+          flatpak build-bundle --arch=x86_64 \
+            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+            flatpak-repo "$BUNDLE" "$APP_ID" "$FLATPAK_BRANCH"
+          [[ -s "$BUNDLE" ]]
+          flatpak install --user --noninteractive -y "$BUNDLE"
+          [[ "$(flatpak info --user --show-ref "$APP_ID")" == "app/$APP_ID/x86_64/$FLATPAK_BRANCH" ]]
+          [[ "$(flatpak info --user --show-runtime "$APP_ID")" == "org.gnome.Platform/x86_64/$RUNTIME_VERSION" ]]
+          flatpak run --user --command=sh "$APP_ID" -c \
+            'ldd /app/bin/cube-solver > /tmp/cube-solver-ldd.txt; cat /tmp/cube-solver-ldd.txt; ! grep -F "not found" /tmp/cube-solver-ldd.txt'
+          flatpak info --user --show-permissions "$APP_ID" | tee /tmp/cube-solver-flatpak-permissions.txt
+          ! grep -Eq 'shared=.*network|filesystems=.*home' /tmp/cube-solver-flatpak-permissions.txt
+          set +e
+          dbus-run-session -- xvfb-run -a sh -c \
+            "WEBKIT_DISABLE_COMPOSITING_MODE=1 timeout 12s flatpak run --user $APP_ID" \
+            >/tmp/cube-solver-flatpak.log 2>&1
+          rc=$?
+          set -e
+          if [[ $rc -ne 124 && $rc -ne 143 ]]; then
+            cat /tmp/cube-solver-flatpak.log
+            echo "Flatpak exited during startup smoke (code $rc)" >&2
+            exit 1
+          fi
+          flatpak uninstall --user --noninteractive -y "$APP_ID"
+          file "$BUNDLE"
+          sha256sum "$BUNDLE"
 
       - name: Validate and stage macOS packages
         if: runner.os == 'macOS'
@@ -308,40 +319,50 @@ jobs:
             kill "$pid" || true
             wait "$pid" || true
           }
+          if codesign --verify --deep --strict "$app" >/tmp/cube-codesign.log 2>&1; then
+            echo 'unsigned draft unexpectedly contains a signed macOS app' >&2
+            exit 1
+          fi
+          grep -Eq 'not signed|code object is not signed' /tmp/cube-codesign.log
+          if codesign --verify "${dmgs[0]}" >/tmp/cube-dmg-codesign.log 2>&1; then
+            echo 'unsigned draft unexpectedly contains a signed DMG' >&2
+            exit 1
+          fi
+          grep -Eq 'not signed|code object is not signed' /tmp/cube-dmg-codesign.log
           hdiutil verify "${dmgs[0]}"
-          mkdir -p dist /tmp/cube-app-unzip /tmp/cube-dmg
-          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/Cube-Solver-$RELEASE_TAG-macos-universal.app.zip"
-          ditto -x -k "dist/Cube-Solver-$RELEASE_TAG-macos-universal.app.zip" /tmp/cube-app-unzip
-          zipped_app="/tmp/cube-app-unzip/Cube Solver.app"
-          [[ -x "$zipped_app/Contents/MacOS/cube-solver" ]]
-          smoke_app "$zipped_app" app-zip
+          rm -rf /tmp/cube-dmg
+          mkdir -p dist /tmp/cube-dmg
+          smoke_app "$app" app
           hdiutil attach -readonly -nobrowse -mountpoint /tmp/cube-dmg "${dmgs[0]}" >/tmp/hdiutil-attach.log
           trap 'hdiutil detach /tmp/cube-dmg -force >/dev/null 2>&1 || true' EXIT
           dmg_app="/tmp/cube-dmg/Cube Solver.app"
           [[ -x "$dmg_app/Contents/MacOS/cube-solver" ]]
           [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$dmg_app/Contents/Info.plist")" == "$VERSION" ]]
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$dmg_app/Contents/Info.plist")" == "io.github.adamnolle.cubesolver" ]]
           dmg_archs="$(lipo -archs "$dmg_app/Contents/MacOS/cube-solver")"
           [[ "$dmg_archs" == *arm64* && "$dmg_archs" == *x86_64* ]]
+          if codesign --verify --deep --strict "$dmg_app" >/tmp/cube-dmg-app-codesign.log 2>&1; then
+            echo 'unsigned draft unexpectedly contains a signed app inside the DMG' >&2
+            exit 1
+          fi
+          grep -Eq 'not signed|code object is not signed' /tmp/cube-dmg-app-codesign.log
           smoke_app "$dmg_app" dmg
           hdiutil detach /tmp/cube-dmg -force
           trap - EXIT
           cp "${dmgs[0]}" "dist/Cube-Solver-$RELEASE_TAG-macos-universal.dmg"
           file dist/*
 
-      - name: Validate and stage Windows packages
+      - name: Validate and stage Windows NSIS executable
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $bundleRoot = "src-tauri/target/${{ matrix.target }}/release/bundle"
-          $msi = @(Get-ChildItem "$bundleRoot/msi" -Filter *.msi)
           $nsis = @(Get-ChildItem "$bundleRoot/nsis" -Filter *.exe)
-          if ($msi.Count -ne 1 -or $nsis.Count -ne 1) {
-            throw "Expected one MSI and one NSIS installer; got $($msi.Count) and $($nsis.Count)"
-          }
-          foreach ($file in @($msi[0], $nsis[0])) {
-            $signature = Get-AuthenticodeSignature $file.FullName
-            if ($signature.Status -ne 'NotSigned') { throw "Unsigned draft unexpectedly has signature status $($signature.Status): $($file.FullName)" }
+          if ($nsis.Count -ne 1) { throw "Expected one NSIS installer; got $($nsis.Count)" }
+          $signature = Get-AuthenticodeSignature $nsis[0].FullName
+          if ($signature.Status -ne 'NotSigned') {
+            throw "Unsigned draft unexpectedly has signature status $($signature.Status): $($nsis[0].FullName)"
           }
           function Assert-StaysAlive([string]$Path, [string]$Label) {
             $app = Start-Process $Path -PassThru
@@ -362,23 +383,6 @@ jobs:
               if ($machine -ne 0x8664) { throw "$Label PE machine is 0x$($machine.ToString('x')), expected x86_64" }
             } finally { $stream.Dispose() }
           }
-          $installer = New-Object -ComObject WindowsInstaller.Installer
-          $database = $installer.OpenDatabase($msi[0].FullName, 0)
-          $versionView = $database.OpenView('SELECT `Value` FROM `Property` WHERE `Property`=''ProductVersion''')
-          $versionView.Execute()
-          $msiVersion = $versionView.Fetch().StringData(1)
-          if ($msiVersion -ne $env:VERSION) { throw "MSI ProductVersion is $msiVersion, expected $env:VERSION" }
-          $template = $database.SummaryInformation(0).Property(7)
-          if ($template -notmatch 'x64') { throw "MSI template does not declare x64: $template" }
-          $admin = Join-Path $env:RUNNER_TEMP 'msi-admin'
-          New-Item -ItemType Directory -Force $admin | Out-Null
-          $msiArgs = @('/a', "`"$($msi[0].FullName)`"", '/qn', "TARGETDIR=`"$admin`"")
-          $process = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
-          if ($process.ExitCode -notin @(0, 3010)) { throw "MSI administrative extraction failed: $($process.ExitCode)" }
-          $msiBinary = Get-ChildItem $admin -Recurse -Filter cube-solver.exe | Select-Object -First 1
-          if (-not $msiBinary) { throw 'MSI did not contain cube-solver.exe' }
-          Assert-X64Version $msiBinary.FullName 'MSI payload'
-          Assert-StaysAlive $msiBinary.FullName 'MSI payload'
           & 7z l $nsis[0].FullName | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'NSIS installer could not be inspected by 7-Zip' }
           $nsisDir = Join-Path $env:RUNNER_TEMP 'nsis-install'
@@ -390,7 +394,6 @@ jobs:
           Assert-X64Version $nsisBinary.FullName 'NSIS payload'
           Assert-StaysAlive $nsisBinary.FullName 'NSIS payload'
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item $msi[0].FullName "dist/Cube-Solver-$env:RELEASE_TAG-windows-x86_64.msi"
           Copy-Item $nsis[0].FullName "dist/Cube-Solver-$env:RELEASE_TAG-windows-x86_64-setup.exe"
           Get-FileHash dist/* -Algorithm SHA256 | Format-Table
 
@@ -458,12 +461,8 @@ jobs:
           root = pathlib.Path('dist')
           tag = os.environ['RELEASE_TAG']
           expected = {
-              f'Cube-Solver-{tag}-linux-x86_64.deb',
-              f'Cube-Solver-{tag}-linux-x86_64.rpm',
-              f'Cube-Solver-{tag}-linux-x86_64.AppImage',
-              f'Cube-Solver-{tag}-macos-universal.app.zip',
+              f'Cube-Solver-{tag}-linux-x86_64.flatpak',
               f'Cube-Solver-{tag}-macos-universal.dmg',
-              f'Cube-Solver-{tag}-windows-x86_64.msi',
               f'Cube-Solver-{tag}-windows-x86_64-setup.exe',
           }
           expected_metadata = {
@@ -548,12 +547,8 @@ jobs:
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |
-            dist/*.deb
-            dist/*.rpm
-            dist/*.AppImage
-            dist/*.zip
+            dist/*.flatpak
             dist/*.dmg
-            dist/*.msi
             dist/*.exe
 
       - name: Create or replace the unsigned draft release

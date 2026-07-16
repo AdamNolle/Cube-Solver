@@ -1,7 +1,6 @@
 [package]
 name = "cube_solver"
 edition.workspace = true
-license.workspace = true
 version.workspace = true
 
 [dependencies]
