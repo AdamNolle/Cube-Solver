@@ -251,7 +251,11 @@ jobs:
           mkdir -p /tmp/cube-deb /tmp/cube-rpm
           dpkg-deb -x "${debs[0]}" /tmp/cube-deb || { echo 'deb extraction failed' >&2; exit 1; }
           rpm_path="$(realpath "${rpms[0]}")"
-          rpm2cpio "$rpm_path" > /tmp/cube-rpm.cpio || { echo 'rpm2cpio conversion failed' >&2; exit 1; }
+          set +e
+          rpm2cpio "$rpm_path" > /tmp/cube-rpm.cpio
+          rpm2cpio_rc=$?
+          set -e
+          printf 'rpm2cpio exit status: %s\n' "$rpm2cpio_rc"
           [[ -s /tmp/cube-rpm.cpio ]] || { echo 'rpm2cpio produced an empty archive' >&2; exit 1; }
           (cd /tmp/cube-rpm && cpio -idm --quiet < /tmp/cube-rpm.cpio) || { echo 'rpm cpio extraction failed' >&2; exit 1; }
           deb_binary="$(find /tmp/cube-deb -type f -name cube-solver -perm -111 -print -quit)"
