@@ -136,7 +136,7 @@ jobs:
       matrix:
         include:
           - label: Linux Flatpak x86_64
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             artifact: release-linux-x86_64
             target: x86_64-unknown-linux-gnu
             bundles: deb
@@ -179,7 +179,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            appstream appstream-compose binutils build-essential curl dbus-x11 desktop-file-utils elfutils \
+            appstream binutils build-essential curl dbus-x11 desktop-file-utils elfutils \
             file flatpak flatpak-builder libayatana-appindicator3-dev librsvg2-dev \
             libssl-dev libwebkit2gtk-4.1-dev libxdo-dev patchelf wget xvfb
 
