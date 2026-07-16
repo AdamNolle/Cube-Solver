@@ -259,8 +259,8 @@ The release workflow produces three native desktop downloads:
 - macOS universal: `.dmg`,
 - Linux x86_64: `.flatpak` bundle using the GNOME 50 runtime.
 
-The first `v0.1.0` release is prepared as a **draft** until trusted Apple notarization and Windows publisher-signing credentials are configured. The Flatpak is a single-file application bundle; Flatpak downloads its declared GNOME runtime from Flathub when needed.
+The `v0.1.0` packages are published **unsigned** by explicit owner decision. Apple notarization and Windows publisher signing are not configured, so Gatekeeper and SmartScreen warnings are expected. The Flatpak is a single-file application bundle; Flatpak downloads its declared GNOME runtime from Flathub when needed.
 
-Unsigned development artifacts can be structurally valid and checksum-verified while still triggering Gatekeeper or SmartScreen warnings. Checksums prove file integrity; they do not establish a trusted publisher identity.
+The packages are structurally validated, replay-tested, checksum-verified, and provenance-attested, but those checks do not establish a trusted publisher identity.
 
 See [`docs/RELEASING.md`](docs/RELEASING.md) for artifact contracts, validation steps, signing requirements, and the draft-to-public checklist.

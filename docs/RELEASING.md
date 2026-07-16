@@ -1,11 +1,11 @@
 # Release guide
 
-Cube Solver uses a two-stage release policy:
+Cube Solver uses a validate-first release policy:
 
 1. **Build an unsigned draft** on GitHub-hosted Linux, macOS, and Windows runners.
-2. **Publish only after trusted platform signing, hosted validation, and manual installation checks.**
+2. **Prefer trusted platform signing before publication.** An explicit repository-owner decision may publish an unsigned build only when the title and notes clearly warn users.
 
-This distinction matters. A checksum proves that a download was not corrupted after the workflow produced it. It does not prove a trusted publisher identity to Gatekeeper or SmartScreen.
+This distinction matters. A checksum proves that a download was not corrupted after the workflow produced it. It does not prove a trusted publisher identity to Gatekeeper or SmartScreen. The public `v0.1.0` release is an explicitly approved unsigned exception.
 
 ## Version contract
 
@@ -28,6 +28,18 @@ The workflow tag is `v` plus that version, for example `v0.1.0`.
 6. Inspect the resulting draft release; do not publish it.
 
 The workflow is manual-only and always creates or updates a **draft**. It refuses to modify a published release. Replacing an existing draft requires an explicit input and is allowed only for a draft.
+
+### Publishing an unsigned exception
+
+Publishing an unsigned draft requires explicit repository-owner approval. Before publication:
+
+- change the title and notes to say **unsigned public release**,
+- set the manifest publication state to `published-unsigned`,
+- retain `signed: false` and `notarized: false`,
+- verify package hashes and provenance again,
+- never imply that Gatekeeper or SmartScreen will trust the packages.
+
+Once published, assets are immutable under this policy. Any later signed build uses a new patch version.
 
 ## Artifact contract
 
@@ -117,9 +129,9 @@ Use SHA-256 and a trusted timestamp server. Never silently fall back to unsigned
 
 > `TAURI_SIGNING_PRIVATE_KEY` signs Tauri updater metadata. It is not Apple code signing or Windows Authenticode signing.
 
-## Replace the unsigned draft
+## Replace an unsigned draft
 
-After signing credentials are available:
+After signing credentials are available, while the release is still a draft:
 
 1. Add fail-closed macOS notarization and Windows Authenticode steps to the release workflow, guarded by a protected release environment.
 2. Require the workflow to reject missing or invalid signatures rather than falling back to unsigned output.

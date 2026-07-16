@@ -1,8 +1,8 @@
 # Cube Solver v0.1.0
 
-> **Unsigned draft — not yet a public release.**
+> **Unsigned public release.**
 >
-> These packages are built and structurally validated by GitHub-hosted Linux, macOS, and Windows runners. Apple notarization and Windows Authenticode publisher signing are not yet configured. Gatekeeper and SmartScreen warnings are therefore expected. Keep this release in draft until signed replacement assets pass the same workflow.
+> These packages are built and structurally validated by GitHub-hosted Linux, macOS, and Windows runners. Apple notarization and Windows Authenticode publisher signing are not configured. Gatekeeper and SmartScreen warnings are therefore expected. This release was published unsigned by explicit owner decision; checksums and provenance attest build integrity, not publisher identity.
 
 ## Highlights
 
@@ -37,11 +37,10 @@
 - Windows NSIS inspection, x86_64 payload/version, signature-state check, and startup smoke,
 - exact three-package asset allowlist and verified SHA-256 manifest.
 
-## Before publishing
+## Remaining platform-trust work
 
-- [ ] Configure Developer ID signing and Apple notarization; verify/staple the app and DMG.
-- [ ] Configure Windows Authenticode signing; require a `Valid` signature on the NSIS setup executable.
-- [ ] Add fail-closed signing/notarization steps to the workflow, then replace this draft’s unsigned assets.
+- [ ] Configure Developer ID signing and Apple notarization for a future release; verify and staple the app and DMG.
+- [ ] Configure Windows Authenticode signing for a future release; require a `Valid` signature on the NSIS setup executable.
 - [ ] Install and manually exercise Studio, custom scramble, Solve, Cancel, Replay, and Swarm on physical Linux, macOS, and Windows machines.
-- [ ] Re-check `SHA256SUMS`, provenance, release notes, and download names.
-- [ ] Publish only after all checks above are complete.
+
+Because `v0.1.0` is now public, signed replacements must use a new patch version rather than silently replacing these downloads.
