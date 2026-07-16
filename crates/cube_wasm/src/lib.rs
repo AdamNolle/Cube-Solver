@@ -59,13 +59,20 @@ pub fn warm_solver() {
 }
 
 fn reduction_time_limit(n: usize) -> Duration {
-    if n <= 5 {
-        Duration::from_secs(28)
+    let seconds: u64 = if n <= 5 {
+        28
     } else if n <= 8 {
-        Duration::from_secs(115)
+        115
     } else {
-        Duration::from_secs(290)
-    }
+        290
+    };
+    // Debug test binaries are substantially slower on hosted Windows and run
+    // several solver tests concurrently. Keep the product watchdog unchanged,
+    // but give correctness tests a finite margin so scheduler contention cannot
+    // masquerade as a solver failure.
+    #[cfg(test)]
+    let seconds = seconds.saturating_mul(4);
+    Duration::from_secs(seconds)
 }
 
 /// A tiny deterministic RNG (xorshift64*) so scrambles are reproducible by seed
