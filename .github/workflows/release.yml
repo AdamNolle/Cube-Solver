@@ -1,0 +1,590 @@
+name: Draft release
+
+# Builds a fail-closed, unsigned draft release for inspection. Publishing is a
+# separate human decision after Apple notarization and Windows Authenticode
+# credentials are configured and every downloaded artifact has been tested.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (must match the Tauri/Cargo version)
+        required: true
+        default: v0.1.0
+        type: string
+      replace_existing_draft:
+        description: Replace assets only when the existing release is still a draft for this commit
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: draft-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ inputs.tag }}
+
+jobs:
+  verify-source:
+    name: Verify source and version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out the exact source commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Validate tag, versions, generated UI, and lockfiles
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "tag must look like v0.1.0" >&2
+            exit 1
+          }
+          VERSION="${RELEASE_TAG#v}"
+          NOTES_FILE="docs/release-notes-${RELEASE_TAG}.md"
+          [[ -f "$NOTES_FILE" ]] || { echo "missing release notes: $NOTES_FILE" >&2; exit 1; }
+          python3 - "$VERSION" <<'PY'
+          import json, pathlib, re, sys
+          expected = sys.argv[1]
+          root = pathlib.Path('.')
+          tauri = json.loads((root / 'src-tauri/tauri.conf.json').read_text())['version']
+          desktop = re.search(r'^version\s*=\s*"([^"]+)"', (root / 'src-tauri/Cargo.toml').read_text(), re.M).group(1)
+          workspace = re.search(r'^version\s*=\s*"([^"]+)"', (root / 'Cargo.toml').read_text().split('[workspace.package]', 1)[1], re.M).group(1)
+          versions = {'tauri.conf.json': tauri, 'src-tauri/Cargo.toml': desktop, 'Cargo.toml': workspace}
+          wrong = {path: value for path, value in versions.items() if value != expected}
+          if wrong:
+              raise SystemExit(f'version mismatch: expected {expected}, got {wrong}')
+          print(f'version contract verified: {expected}')
+          PY
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "release commit is not on origin/main" >&2
+            exit 1
+          }
+          if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
+            [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" == tag ]] || { echo 'release tag must be annotated' >&2; exit 1; }
+            [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$GITHUB_SHA" ]] || {
+              echo "existing tag does not point at this commit" >&2
+              exit 1
+            }
+          fi
+          python3 tools/gen-index.py --check
+          python3 tools/frontend-smoke.py
+          cargo metadata --locked --no-deps >/dev/null
+          cargo metadata --locked --no-deps --manifest-path src-tauri/Cargo.toml >/dev/null
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to overwrite a published or unapproved draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLACE_DRAFT: ${{ inputs.replace_existing_draft }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if release_json="$(gh release view "$RELEASE_TAG" --json isDraft,tagName,targetCommitish 2>/dev/null)"; then
+            is_draft="$(jq -r .isDraft <<<"$release_json")"
+            [[ "$is_draft" == true ]] || {
+              echo "release $RELEASE_TAG is already published and will not be modified" >&2
+              exit 1
+            }
+            git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" == tag ]] || { echo 'release tag must be annotated' >&2; exit 1; }
+            [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$GITHUB_SHA" ]] || {
+              echo "existing draft tag does not resolve to this commit" >&2
+              exit 1
+            }
+            [[ "$REPLACE_DRAFT" == true ]] || {
+              echo "draft already exists; rerun with replace_existing_draft=true only after checking it" >&2
+              exit 1
+            }
+          fi
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: verify-source
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x86_64
+            os: ubuntu-22.04
+            artifact: release-linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+          - label: macOS universal
+            os: macos-14
+            artifact: release-macos-universal
+            target: universal-apple-darwin
+            bundles: app,dmg
+          - label: Windows x86_64
+            os: windows-2022
+            artifact: release-windows-x86_64
+            target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.verify-source.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: "10.15"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown,${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+
+      - name: Install Linux build and package dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cpio curl file libayatana-appindicator3-dev libfuse2 \
+            librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev \
+            patchelf rpm wget xvfb
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ". -> target\nsrc-tauri -> src-tauri/target"
+
+      - name: Install pinned packaging tools
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
+        with:
+          tool: wasm-pack@0.13.1,tauri-cli@2.10.1
+
+      - name: Verify generated frontend and JavaScript
+        shell: bash
+        run: |
+          python3 tools/gen-index.py --check
+          python3 tools/frontend-smoke.py
+          node --check web/solver-worker.js
+
+      - name: Native 11x11 sticker-state replay gate
+        timeout-minutes: 15
+        shell: bash
+        run: >-
+          cargo test --release --locked -p cube_wasm --lib
+          tests::native_n11_sticker_entrypoint_solves_and_replays
+          -- --ignored --exact --nocapture
+
+      - name: Build unsigned Tauri bundles
+        working-directory: src-tauri
+        shell: bash
+        run: >-
+          cargo tauri build --ci --no-sign
+          --target ${{ matrix.target }}
+          --bundles ${{ matrix.bundles }}
+
+      - name: Runtime-smoke the final generated WASM
+        shell: bash
+        run: node tools/wasm-runtime-smoke.mjs
+
+      - name: Validate and stage Linux packages
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          mapfile -t debs < <(find src-tauri/target/${{ matrix.target }}/release/bundle/deb -maxdepth 1 -type f -name '*.deb')
+          mapfile -t rpms < <(find src-tauri/target/${{ matrix.target }}/release/bundle/rpm -maxdepth 1 -type f -name '*.rpm')
+          mapfile -t appimages < <(find src-tauri/target/${{ matrix.target }}/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage')
+          [[ ${#debs[@]} -eq 1 && ${#rpms[@]} -eq 1 && ${#appimages[@]} -eq 1 ]] || {
+            printf 'expected one deb/rpm/AppImage; got %s/%s/%s\n' "${#debs[@]}" "${#rpms[@]}" "${#appimages[@]}" >&2
+            exit 1
+          }
+          [[ "$(dpkg-deb -f "${debs[0]}" Version)" == "$VERSION" ]]
+          [[ "$(dpkg-deb -f "${debs[0]}" Architecture)" == "amd64" ]]
+          [[ "$(rpm -qp --qf '%{VERSION}' "${rpms[0]}")" == "$VERSION" ]]
+          [[ "$(rpm -qp --qf '%{ARCH}' "${rpms[0]}")" == "x86_64" ]]
+          smoke_binary() {
+            local binary="$1" label="$2" log="/tmp/cube-solver-${2}.log"
+            set +e
+            WEBKIT_DISABLE_COMPOSITING_MODE=1 timeout 12s xvfb-run -a "$binary" >"$log" 2>&1
+            local rc=$?
+            set -e
+            if [[ $rc -ne 124 && $rc -ne 143 ]]; then
+              cat "$log"
+              echo "$label exited during startup smoke (code $rc)" >&2
+              exit 1
+            fi
+          }
+          rm -rf /tmp/cube-deb /tmp/cube-rpm squashfs-root
+          mkdir -p /tmp/cube-deb /tmp/cube-rpm
+          dpkg-deb -x "${debs[0]}" /tmp/cube-deb
+          (cd /tmp/cube-rpm && rpm2cpio "${rpms[0]}" | cpio -idm --quiet)
+          deb_binary="$(find /tmp/cube-deb -type f -name cube-solver -perm -111 -print -quit)"
+          rpm_binary="$(find /tmp/cube-rpm -type f -name cube-solver -perm -111 -print -quit)"
+          [[ -n "$deb_binary" && -n "$rpm_binary" ]] || { echo 'deb/rpm payload missing executable' >&2; exit 1; }
+          smoke_binary "$deb_binary" deb
+          smoke_binary "$rpm_binary" rpm
+          chmod +x "${appimages[0]}"
+          "${appimages[0]}" --appimage-extract >/dev/null
+          test -x squashfs-root/AppRun
+          set +e
+          APPIMAGE_EXTRACT_AND_RUN=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+            timeout 12s xvfb-run -a "${appimages[0]}" >/tmp/cube-solver-appimage.log 2>&1
+          rc=$?
+          set -e
+          if [[ $rc -ne 124 && $rc -ne 143 ]]; then
+            cat /tmp/cube-solver-appimage.log
+            echo "AppImage exited during startup smoke (code $rc)" >&2
+            exit 1
+          fi
+          cp "${debs[0]}" "dist/Cube-Solver-$RELEASE_TAG-linux-x86_64.deb"
+          cp "${rpms[0]}" "dist/Cube-Solver-$RELEASE_TAG-linux-x86_64.rpm"
+          cp "${appimages[0]}" "dist/Cube-Solver-$RELEASE_TAG-linux-x86_64.AppImage"
+          file dist/*
+
+      - name: Validate and stage macOS packages
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_root="src-tauri/target/${{ matrix.target }}/release/bundle"
+          app="$bundle_root/macos/Cube Solver.app"
+          shopt -s nullglob
+          dmgs=("$bundle_root"/dmg/*.dmg)
+          [[ -d "$app" && ${#dmgs[@]} -eq 1 ]]
+          plist="$app/Contents/Info.plist"
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" == "$VERSION" ]]
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" == "io.github.adamnolle.cubesolver" ]]
+          archs="$(lipo -archs "$app/Contents/MacOS/cube-solver")"
+          [[ "$archs" == *arm64* && "$archs" == *x86_64* ]] || {
+            echo "universal binary missing an architecture: $archs" >&2
+            exit 1
+          }
+          smoke_app() {
+            local candidate="$1" label="$2" log="/tmp/cube-solver-${2}.log"
+            "$candidate/Contents/MacOS/cube-solver" >"$log" 2>&1 &
+            local pid=$!
+            sleep 10
+            kill -0 "$pid" || { cat "$log"; echo "$label exited during startup smoke" >&2; exit 1; }
+            kill "$pid" || true
+            wait "$pid" || true
+          }
+          hdiutil verify "${dmgs[0]}"
+          mkdir -p dist /tmp/cube-app-unzip /tmp/cube-dmg
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/Cube-Solver-$RELEASE_TAG-macos-universal.app.zip"
+          ditto -x -k "dist/Cube-Solver-$RELEASE_TAG-macos-universal.app.zip" /tmp/cube-app-unzip
+          zipped_app="/tmp/cube-app-unzip/Cube Solver.app"
+          [[ -x "$zipped_app/Contents/MacOS/cube-solver" ]]
+          smoke_app "$zipped_app" app-zip
+          hdiutil attach -readonly -nobrowse -mountpoint /tmp/cube-dmg "${dmgs[0]}" >/tmp/hdiutil-attach.log
+          trap 'hdiutil detach /tmp/cube-dmg -force >/dev/null 2>&1 || true' EXIT
+          dmg_app="/tmp/cube-dmg/Cube Solver.app"
+          [[ -x "$dmg_app/Contents/MacOS/cube-solver" ]]
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$dmg_app/Contents/Info.plist")" == "$VERSION" ]]
+          dmg_archs="$(lipo -archs "$dmg_app/Contents/MacOS/cube-solver")"
+          [[ "$dmg_archs" == *arm64* && "$dmg_archs" == *x86_64* ]]
+          smoke_app "$dmg_app" dmg
+          hdiutil detach /tmp/cube-dmg -force
+          trap - EXIT
+          cp "${dmgs[0]}" "dist/Cube-Solver-$RELEASE_TAG-macos-universal.dmg"
+          file dist/*
+
+      - name: Validate and stage Windows packages
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundleRoot = "src-tauri/target/${{ matrix.target }}/release/bundle"
+          $msi = @(Get-ChildItem "$bundleRoot/msi" -Filter *.msi)
+          $nsis = @(Get-ChildItem "$bundleRoot/nsis" -Filter *.exe)
+          if ($msi.Count -ne 1 -or $nsis.Count -ne 1) {
+            throw "Expected one MSI and one NSIS installer; got $($msi.Count) and $($nsis.Count)"
+          }
+          foreach ($file in @($msi[0], $nsis[0])) {
+            $signature = Get-AuthenticodeSignature $file.FullName
+            if ($signature.Status -ne 'NotSigned') { throw "Unsigned draft unexpectedly has signature status $($signature.Status): $($file.FullName)" }
+          }
+          function Assert-StaysAlive([string]$Path, [string]$Label) {
+            $app = Start-Process $Path -PassThru
+            Start-Sleep -Seconds 10
+            if ($app.HasExited) { throw "$Label exited during startup smoke: $($app.ExitCode)" }
+            Stop-Process -Id $app.Id -Force
+          }
+          function Assert-X64Version([string]$Path, [string]$Label) {
+            $info = (Get-Item $Path).VersionInfo
+            if (-not $info.ProductVersion.StartsWith($env:VERSION)) { throw "$Label product version is $($info.ProductVersion), expected $env:VERSION" }
+            $stream = [System.IO.File]::OpenRead($Path)
+            try {
+              $reader = New-Object System.IO.BinaryReader($stream)
+              $stream.Position = 0x3c
+              $peOffset = $reader.ReadInt32()
+              $stream.Position = $peOffset + 4
+              $machine = $reader.ReadUInt16()
+              if ($machine -ne 0x8664) { throw "$Label PE machine is 0x$($machine.ToString('x')), expected x86_64" }
+            } finally { $stream.Dispose() }
+          }
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $installer.OpenDatabase($msi[0].FullName, 0)
+          $versionView = $database.OpenView('SELECT `Value` FROM `Property` WHERE `Property`=''ProductVersion''')
+          $versionView.Execute()
+          $msiVersion = $versionView.Fetch().StringData(1)
+          if ($msiVersion -ne $env:VERSION) { throw "MSI ProductVersion is $msiVersion, expected $env:VERSION" }
+          $template = $database.SummaryInformation(0).Property(7)
+          if ($template -notmatch 'x64') { throw "MSI template does not declare x64: $template" }
+          $admin = Join-Path $env:RUNNER_TEMP 'msi-admin'
+          New-Item -ItemType Directory -Force $admin | Out-Null
+          $msiArgs = @('/a', "`"$($msi[0].FullName)`"", '/qn', "TARGETDIR=`"$admin`"")
+          $process = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
+          if ($process.ExitCode -notin @(0, 3010)) { throw "MSI administrative extraction failed: $($process.ExitCode)" }
+          $msiBinary = Get-ChildItem $admin -Recurse -Filter cube-solver.exe | Select-Object -First 1
+          if (-not $msiBinary) { throw 'MSI did not contain cube-solver.exe' }
+          Assert-X64Version $msiBinary.FullName 'MSI payload'
+          Assert-StaysAlive $msiBinary.FullName 'MSI payload'
+          & 7z l $nsis[0].FullName | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installer could not be inspected by 7-Zip' }
+          $nsisDir = Join-Path $env:RUNNER_TEMP 'nsis-install'
+          New-Item -ItemType Directory -Force $nsisDir | Out-Null
+          $nsisProcess = Start-Process $nsis[0].FullName -ArgumentList "/S /D=$nsisDir" -Wait -PassThru
+          if ($nsisProcess.ExitCode -ne 0) { throw "NSIS silent install failed: $($nsisProcess.ExitCode)" }
+          $nsisBinary = Get-ChildItem $nsisDir -Recurse -Filter cube-solver.exe | Select-Object -First 1
+          if (-not $nsisBinary) { throw 'NSIS installer did not install cube-solver.exe' }
+          Assert-X64Version $nsisBinary.FullName 'NSIS payload'
+          Assert-StaysAlive $nsisBinary.FullName 'NSIS payload'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $msi[0].FullName "dist/Cube-Solver-$env:RELEASE_TAG-windows-x86_64.msi"
+          Copy-Item $nsis[0].FullName "dist/Cube-Solver-$env:RELEASE_TAG-windows-x86_64-setup.exe"
+          Get-FileHash dist/* -Algorithm SHA256 | Format-Table
+
+      - name: Write per-platform build metadata
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, platform, subprocess
+          dist = pathlib.Path('dist')
+          assert dist.is_dir() and any(dist.iterdir()), 'dist is empty'
+          metadata = {
+              'tag': os.environ['RELEASE_TAG'],
+              'version': os.environ['VERSION'],
+              'commit': os.environ['GITHUB_SHA'],
+              'runner_os': os.environ['RUNNER_OS'],
+              'runner_arch': os.environ['RUNNER_ARCH'],
+              'target': '${{ matrix.target }}',
+              'signed': False,
+              'notarized': False,
+              'rustc': subprocess.check_output(['rustc', '--version'], text=True).strip(),
+              'tauri_cli': subprocess.check_output(['cargo', 'tauri', '--version'], text=True).strip(),
+              'wasm_pack': subprocess.check_output(['wasm-pack', '--version'], text=True).strip(),
+              'python': platform.python_version(),
+          }
+          (dist / 'build-metadata-${{ matrix.artifact }}.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          PY
+
+      - name: Upload normalized packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble-draft:
+    name: Assemble verified draft
+    needs: [verify-source, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.verify-source.outputs.version }}
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download normalized packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: incoming
+
+      - name: Enforce asset allowlist and create integrity manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python3 - <<'PY'
+          import collections, hashlib, json, os, pathlib, shutil
+          incoming = pathlib.Path('incoming')
+          root = pathlib.Path('dist')
+          tag = os.environ['RELEASE_TAG']
+          expected = {
+              f'Cube-Solver-{tag}-linux-x86_64.deb',
+              f'Cube-Solver-{tag}-linux-x86_64.rpm',
+              f'Cube-Solver-{tag}-linux-x86_64.AppImage',
+              f'Cube-Solver-{tag}-macos-universal.app.zip',
+              f'Cube-Solver-{tag}-macos-universal.dmg',
+              f'Cube-Solver-{tag}-windows-x86_64.msi',
+              f'Cube-Solver-{tag}-windows-x86_64-setup.exe',
+          }
+          expected_metadata = {
+              'build-metadata-release-linux-x86_64.json': 'x86_64-unknown-linux-gnu',
+              'build-metadata-release-macos-universal.json': 'universal-apple-darwin',
+              'build-metadata-release-windows-x86_64.json': 'x86_64-pc-windows-msvc',
+          }
+          incoming_files = [path for path in incoming.rglob('*') if path.is_file() or path.is_symlink()]
+          if any(path.is_symlink() for path in incoming_files):
+              raise SystemExit('downloaded artifacts must not contain symlinks')
+          by_name = collections.defaultdict(list)
+          for path in incoming_files:
+              by_name[path.name].append(path)
+          duplicates = {name: paths for name, paths in by_name.items() if len(paths) != 1}
+          if duplicates:
+              raise SystemExit(f'duplicate artifact basenames: {sorted(duplicates)}')
+          actual_names = set(by_name)
+          allowed_names = expected | set(expected_metadata)
+          if actual_names != allowed_names:
+              raise SystemExit(f'artifact contract mismatch\nmissing={sorted(allowed_names-actual_names)}\nunexpected={sorted(actual_names-allowed_names)}')
+          for name, paths in by_name.items():
+              shutil.copy2(paths[0], root / name)
+          expected_runners = {
+              'build-metadata-release-linux-x86_64.json': ('Linux', {'X64'}),
+              'build-metadata-release-macos-universal.json': ('macOS', {'X64', 'ARM64'}),
+              'build-metadata-release-windows-x86_64.json': ('Windows', {'X64'}),
+          }
+          exact_fields = {
+              'tag', 'version', 'commit', 'runner_os', 'runner_arch', 'target',
+              'signed', 'notarized', 'rustc', 'tauri_cli', 'wasm_pack', 'python',
+          }
+          metadata = [root / name for name in sorted(expected_metadata)]
+          builders = []
+          for path in metadata:
+              value = json.loads(path.read_text())
+              if set(value) != exact_fields:
+                  raise SystemExit(f'invalid metadata fields in {path.name}: {sorted(set(value) ^ exact_fields)}')
+              wanted_target = expected_metadata[path.name]
+              wanted_os, allowed_arches = expected_runners[path.name]
+              required = {
+                  'tag': tag,
+                  'version': os.environ['VERSION'],
+                  'commit': os.environ['GITHUB_SHA'],
+                  'target': wanted_target,
+                  'runner_os': wanted_os,
+              }
+              wrong = {key: (value.get(key), expected_value) for key, expected_value in required.items() if value.get(key) != expected_value}
+              if value['runner_arch'] not in allowed_arches:
+                  wrong['runner_arch'] = (value['runner_arch'], sorted(allowed_arches))
+              if value['signed'] is not False or value['notarized'] is not False:
+                  wrong['signing'] = ((value['signed'], value['notarized']), (False, False))
+              for tool in ('rustc', 'tauri_cli', 'wasm_pack', 'python'):
+                  if not isinstance(value[tool], str) or not value[tool].strip():
+                      wrong[tool] = (value[tool], 'non-empty string')
+              if wrong:
+                  raise SystemExit(f'invalid {path.name}: {wrong}')
+              builders.append(value)
+          files = []
+          for name in sorted(expected):
+              path = root / name
+              if path.is_symlink() or path.stat().st_size == 0:
+                  raise SystemExit(f'invalid release asset: {name}')
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              files.append({'name': name, 'bytes': path.stat().st_size, 'sha256': digest})
+          (root / 'SHA256SUMS').write_text(''.join(f"{f['sha256']}  {f['name']}\n" for f in files))
+          manifest = {
+              'tag': tag,
+              'version': os.environ['VERSION'],
+              'commit': os.environ['GITHUB_SHA'],
+              'workflow_run': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'signed': False,
+              'notarized': False,
+              'publication_state': 'draft',
+              'files': files,
+              'builders': builders,
+          }
+          (root / 'release-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
+          (cd dist && sha256sum --check SHA256SUMS)
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+            dist/*.zip
+            dist/*.dmg
+            dist/*.msi
+            dist/*.exe
+
+      - name: Create or replace the unsigned draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLACE_DRAFT: ${{ inputs.replace_existing_draft }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find dist -maxdepth 1 -type f ! -name 'build-metadata-*' -print | sort)
+          if [[ -z "$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")" ]]; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git tag -a "$RELEASE_TAG" "$GITHUB_SHA" -m "Cube Solver $RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          else
+            git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" == tag ]] || { echo 'release tag must be annotated' >&2; exit 1; }
+            [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$GITHUB_SHA" ]] || { echo 'release tag does not match this commit' >&2; exit 1; }
+          fi
+          if release_json="$(gh release view "$RELEASE_TAG" --json isDraft,assets 2>/dev/null)"; then
+            [[ "$(jq -r .isDraft <<<"$release_json")" == true ]] || { echo 'release was published during the workflow; refusing mutation' >&2; exit 1; }
+            [[ "$REPLACE_DRAFT" == true ]] || { echo 'existing draft replacement was not authorized' >&2; exit 1; }
+            git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" == tag ]] || { echo 'draft tag is no longer annotated' >&2; exit 1; }
+            [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$GITHUB_SHA" ]] || { echo 'draft tag no longer matches this commit' >&2; exit 1; }
+            mapfile -t old_assets < <(jq -r '.assets[].name' <<<"$release_json")
+            for asset in "${old_assets[@]}"; do gh release delete-asset "$RELEASE_TAG" "$asset" --yes; done
+            gh release upload "$RELEASE_TAG" "${assets[@]}"
+            gh release edit "$RELEASE_TAG" \
+              --draft \
+              --title "Cube Solver $RELEASE_TAG (unsigned draft)" \
+              --notes-file "docs/release-notes-${RELEASE_TAG}.md"
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --draft \
+              --verify-tag \
+              --title "Cube Solver $RELEASE_TAG (unsigned draft)" \
+              --notes-file "docs/release-notes-${RELEASE_TAG}.md"
+          fi
+          final_json="$(gh release view "$RELEASE_TAG" --json url,isDraft,tagName,targetCommitish)"
+          [[ "$(jq -r .isDraft <<<"$final_json")" == true ]]
+          [[ "$(jq -r .tagName <<<"$final_json")" == "$RELEASE_TAG" ]]
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" == tag ]] || { echo 'final draft tag is not annotated' >&2; exit 1; }
+          [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$GITHUB_SHA" ]] || { echo 'final draft tag does not match this commit' >&2; exit 1; }
+          jq . <<<"$final_json"
