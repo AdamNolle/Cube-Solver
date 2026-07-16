@@ -13,9 +13,6 @@ helmet = helmet.replace('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/th
 sopen = design.index('>', design.index('data-dc-script'))+1
 js = design[sopen: design.rindex('</script>')]
 js = js.replace('} else if (this.autoSpin && !this.activeMove) {', '} else if (this.autoSpin && !this.activeMove && !this.scrambled) {')
-_texture_status = "if (solving) { this.updateLanes(this.texProg); this.ui.status.textContent = 'Solving · reduction sweep'; }\n    else this.ui.status.textContent = 'Scrambling';"
-assert _texture_status in js
-js = js.replace(_texture_status, "if (solving) { this.updateLanes(this.texProg); if (this.ui.status.textContent !== 'Playing visual demo') this.ui.status.textContent = 'Playing visual demo'; }\n    else if (this.ui.status.textContent !== 'Scrambling') this.ui.status.textContent = 'Scrambling';")
 _scramble_status = "if (cur) { this.ui.status.textContent = 'Scrambling';"
 assert _scramble_status in js
 js = js.replace(_scramble_status, "if (cur) { if (this.ui.status.textContent !== 'Scrambling') this.ui.status.textContent = 'Scrambling';")
@@ -46,10 +43,8 @@ WIRE = r'''
     // applyEngineLabels(), with the other two lanes hidden (they only run for 2×2).
     const KEYS = { deterministic:'det', beam:'beam', evolution:'evo', kociemba:'det', reduction:'det' };
     const origScramble = inst.scramble.bind(inst);
-    const origSolve = inst.solve.bind(inst);
     const origReset = inst.resetSolved ? inst.resetSolved.bind(inst) : null;
     const origSetN = inst.setN ? inst.setN.bind(inst) : null;
-    const origReplay = inst.replay ? inst.replay.bind(inst) : null;
     const origSetView = inst.setView ? inst.setView.bind(inst) : null;
     const origBuildCube = inst.buildCube ? inst.buildCube.bind(inst) : null;
     const origFinalizeMove = inst.finalizeMove ? inst.finalizeMove.bind(inst) : null;
@@ -77,23 +72,34 @@ WIRE = r'''
       });
     }
 
-    if (origReset) inst.resetSolved = function(anim){
+    if (origReset) inst.resetSolved = function(silent){
       abortPendingSolve(this);   // a pending solve must not land on a reset/rescrambled cube
-      origReset(anim);
+      origReset(silent);
       if (this.lab){ this.lab.set_size(this.n); this.lab.reset(); }
+      if (!silent){ clearScrambleHistory(this,true); if (this._refreshCustomScramble) this._refreshCustomScramble(this); }
     };
     if (origSetN) inst.setN = function(n){
+      var cap = SOLVE_MAX_N || 11;
+      n = Math.max(2, Math.min(cap, Math.round(Number(n)||2)));
+      if (n===this.n) return;
       abortPendingSolve(this);   // changing N invalidates an in-flight solve's moves
       origSetN(n);
-      this.lastScramble = [];   // a new N invalidates the old scramble's layers
-      this.scrambleMoveCount = 0;
-      this._lastSolveTelemetry = null;
+      clearScrambleHistory(this,true);   // a new N invalidates every move and solution
       if (this.lab){ this.lab.set_size(this.n); this.lab.reset(); }
       if (this._refreshSolvability) this._refreshSolvability(this);
+      if (this._refreshCustomScramble) this._refreshCustomScramble(this);
     };
-    if (origReplay) inst.replay = function(){
-      abortPendingSolve(this);   // don't let an in-flight solve collide with a replay
-      return origReplay();
+    inst.replay = function(){
+      if (this.busy||this._solvePending||!this.lastScramble.length||!this.lastSolution.length) return;
+      if (!rebuildFromScrambleHistory(this)) return;
+      // Keep the Rust-side state at the replay target while the visible cube animates.
+      this.lastSolution.forEach((function(m){ this.lab.apply_design_move(m.axis,m.layer,m.dir); }).bind(this));
+      if (!this.lab.is_solved()){ if(this.ui&&this.ui.status)this.ui.status.textContent='Replay verification failed'; return; }
+      this.queue=this.lastSolution.slice(); this.movesDone=0; this.totalMoves=this.queue.length;
+      this.phase='solving'; this.busy=true; this.scrambled=true; this.hasSolution=false;
+      if(this.ui&&this.ui.status)this.ui.status.textContent='Replaying verified solution';
+      if(this.ui&&this.ui.count)this.ui.count.style.display='inline-block';
+      if(this.syncControls)this.syncControls();
     };
 
     // ---- GPU memory: free three.js geometries/textures instead of leaking them ----
@@ -146,16 +152,70 @@ WIRE = r'''
       return Math.floor(Math.random() * limit); // legacy webview fallback
     }
 
+    function formatFaceTurn(face, width, amount){
+      var head = width <= 1 ? face : (width === 2 ? face+'w' : String(width)+face+'w');
+      return head + (amount === 2 ? '2' : amount < 0 ? "'" : '');
+    }
+    function makeFaceTurn(face, width, amount, n){
+      face=String(face||'').toUpperCase();
+      var spec={R:[0,true,1],L:[0,false,-1],U:[1,true,1],D:[1,false,-1],F:[2,true,1],B:[2,false,-1]}[face];
+      if (!spec) throw new Error('Use only the faces U, D, L, R, F, and B.');
+      var maxWidth = n >= 4 ? Math.floor(n/2) : 1;
+      width=Math.round(Number(width)||1);
+      if (width < 1 || width > maxWidth){
+        throw new Error(n < 4 ? 'Wide turns are available on 4×4 and larger cubes.' : 'Turn width must be between 1 and '+maxWidth+' for '+n+'×'+n+'.');
+      }
+      amount=Number(amount);
+      if (amount !== 1 && amount !== -1 && amount !== 2) throw new Error('Turn amount must be 90°, −90°, or 180°.');
+      var axis=spec[0], positive=spec[1], baseDir=spec[2];
+      var start=positive ? n-width : 0, end=positive ? n-1 : width-1;
+      var dir=amount === 2 ? baseDir : baseDir*amount;
+      var repeats=amount === 2 ? 2 : 1, moves=[];
+      for (var r=0;r<repeats;r++) for (var layer=start;layer<=end;layer++) moves.push({axis:axis,layer:layer,dir:dir});
+      return { notation:formatFaceTurn(face,width,amount), face:face, width:width, amount:amount, moves:moves };
+    }
+    function parseCustomAlgorithm(text, n){
+      text=String(text||'').replace(/[’‘]/g,"'").replace(/,/g,' ').trim();
+      if (!text) throw new Error('Enter at least one move, for example R U R\' U\'.');
+      var tokens=text.split(/\s+/).filter(Boolean);
+      var maxTokens=n===2 ? 9 : 100;
+      if (tokens.length > maxTokens) throw new Error(n===2 ? '2×2 custom scrambles are limited to 9 moves so the exact solver can always search deeply enough.' : 'Custom scrambles are limited to 100 moves.');
+      var groups=[];
+      tokens.forEach(function(token,index){
+        var match=/^(\d+)?([UDLRFBudlrfb])([wW]?)(2'?|'|)?$/.exec(token);
+        if (!match) throw new Error('Move '+(index+1)+' ("'+token+'") is not valid. Try R, R\', R2, Rw, or 3Rw2.');
+        var rawFace=match[2], wideMark=!!match[3], prefix=match[1] ? Number(match[1]) : 0;
+        var lower=rawFace === rawFace.toLowerCase();
+        var width=prefix || ((wideMark||lower) ? 2 : 1);
+        var suffix=match[4]||'';
+        var amount=suffix.indexOf('2')>=0 ? 2 : suffix.indexOf("'")>=0 ? -1 : 1;
+        groups.push(makeFaceTurn(rawFace.toUpperCase(),width,amount,n));
+      });
+      return { groups:groups, moves:groups.reduce(function(all,g){ return all.concat(g.moves); },[]) };
+    }
+    function clearScrambleHistory(self, clearInput){
+      self.lastScramble=[]; self.lastSolution=[]; self._manualGroups=[]; self._customBaseNotation='';
+      self.scrambleMoveCount=0; self.realNotation=null; self.realMoveCount=null;
+      self.realWinner=null; self.realLanes=[]; self.hasSolution=false; self._lastSolveTelemetry=null;
+      if (clearInput){ var input=self.root&&self.root.querySelector('[data-alg-input]'); if(input)input.value=''; setCustomError(self,''); }
+    }
+    function rebuildFromScrambleHistory(self){
+      if (!self.lab||!self.buildCube) return false;
+      self.buildCube(self.n); self.lab.set_size(self.n); self.lab.reset();
+      (self.lastScramble||[]).forEach(function(m){ self.applyInstant(m); self.lab.apply_design_move(m.axis,m.layer,m.dir); });
+      self.scrambled=!self.lab.is_solved();
+      return self.scrambled;
+    }
+
     inst.scramble = function(){
       if (this.busy) return;
       if (this.mode !== 'cubie') return origScramble();   // huge (texture) cubes: design path
       this.resetSolved(true);
-      this._lastSolveTelemetry = null;
+      clearScrambleHistory(this,true);
       const N = this.n;
       // 2×2/3×3 use outer turns. Supported 4×4+ cubes use standard contiguous
       // wide turns from either face, mixing inner layers while staying inside the
-      // replay corpus exercised by the deterministic reduction solver. Bigger
-      // visualization-only cubes may use arbitrary single slices.
+      // replay corpus exercised by the deterministic reduction solver.
       const solvable = (N <= SOLVE_MAX_N) && !!this.lab;
       // Never scramble a solvable cube deeper than the exact solver's reach, or
       // Solve would search to SOLVE_MAX_DEPTH and find no solution.
@@ -185,13 +245,14 @@ WIRE = r'''
       if (solvable){ this.lab.reset(); for (const m of this.lastScramble) this.lab.apply_design_move(m.axis, m.layer, m.dir); }
       this.queue = []; this.activeMove = null;
       this.movesDone = depth; this.totalMoves = depth; this.solveProgress = 0;
-      this.phase = 'idle'; this.busy = false; this.scrambled = true;
+      this.phase = 'idle'; this.busy = false; this.scrambled = true; this.hasSolution = false;
       if (this.setSolvedPct) this.setSolvedPct(0);
       if (this.resetLanes) this.resetLanes();
       if (this.ui && this.ui.status) this.ui.status.textContent = 'Scrambled — ready to solve';
       if (this.ui && this.ui.count) this.ui.count.style.display = 'none';
       if (this.ui && this.ui.move) this.ui.move.style.display = 'none';
       if (this.syncControls) this.syncControls();
+      if (this._refreshCustomScramble) this._refreshCustomScramble(this);
     };
 
     // A user can click Swarm during the brief async WASM boot window, when the
@@ -205,21 +266,7 @@ WIRE = r'''
     }
     syncLabFromVisibleScramble(inst);
 
-    // Mark all race lanes as a visual playback (no real search happened).
-    function setLanesVisual(self){
-      ['det','beam','evo'].forEach(function(k){
-        var el = self.root.querySelector('[data-lane="'+k+'"]'); if(!el) return;
-        var fill=el.querySelector('[data-fill]'), pct=el.querySelector('[data-pct2]'),
-            stat=el.querySelector('[data-stat]'), star=el.querySelector('[data-star]');
-        if(fill) fill.style.width='0%';
-        if(pct){ pct.textContent=''; pct.style.color=''; }
-        if(stat) stat.textContent='visual playback — not searched';
-        if(star) star.style.display='none';
-      });
-    }
-
     inst.finishLanes = function(){
-      if (this._visualSolve){ setLanesVisual(this); return; }
       const winnerKey = KEYS[this.realWinner] || 'det';
       // Use the face-turn (HTM) count, not the half-turn-expanded animation list
       // length, so the lane agrees with the proof box and the README.
@@ -340,33 +387,20 @@ WIRE = r'''
     }
 
     inst.solve = function(){
-      if (this.mode !== 'cubie'){ this._visualSolve=true; return origSolve(); }   // texture cubes: honest visual path
       if (this.busy || this._solvePending) return;
+      // Fail closed if state is ever forced outside the active platform's verified
+      // range. The product no longer offers an inverse-playback "visual solve".
+      if (this.mode !== 'cubie' || this.n > SOLVE_MAX_N || !this.lab){
+        if (this.ui && this.ui.status) this.ui.status.textContent = 'This cube size is not supported by the verified solver';
+        return;
+      }
       // Solve must always do something. On a fresh / already-solved cube
       // (scrambled=false) it used to silently no-op; scramble first, then solve.
       if (!this.scrambled){ if (this.scramble) this.scramble(); if (!this.scrambled) return; }
-      // Clear last solve's real-solver data so a visual (N>3) solve can't show a
-      // stale 3×3 notation/count; the real branch repopulates it via onSolveResult.
+      // Clear the previous solve's data; the verified result repopulates it.
       this.realNotation = null; this.realMoveCount = null;
-      // Visual-only cubes (N > SOLVE_MAX_N): animate the inverse with HONEST lanes — no
-      // real search. Queue is filled synchronously so the loop never finishes early.
-      if (this.n > SOLVE_MAX_N || !this.lab){
-        var inv = this.lastScramble.slice().reverse().map(function(m){ return {axis:m.axis, layer:m.layer, dir:-m.dir}; });
-        this.lastSolution = inv;
-        this.queue = inv.slice();
-        this.movesDone = 0; this.totalMoves = inv.length;
-        this._visualSolve = true;
-        this.phase = 'solving'; this.busy = true;
-        if (this.resetLanes) this.resetLanes();
-        setLanesVisual(this);
-        if (this.ui && this.ui.status) this.ui.status.textContent = 'Playing solution…';
-        if (this.ui && this.ui.count) this.ui.count.style.display = 'inline-block';
-        if (this.syncControls) this.syncControls();
-        return;
-      }
       // Real solve for every supported size. _solvePending (not busy) blocks
       // re-entry without letting the animation loop finish an empty queue.
-      this._visualSolve = false;
       this._solvePending = true;
       this._solveDispatch = null;
       this._solveJobId = (this._solveJobId || 0) + 1;
@@ -527,6 +561,20 @@ WIRE = r'''
         if (self.syncControls) self.syncControls();
         return;
       }
+      // Keep the authoritative Rust-side state synchronized with the visible
+      // replay target. Controls remain locked while the mesh catches up.
+      var targetVerified=false;
+      try {
+        res.moves.forEach(function(m){ self.lab.apply_design_move(m.axis,m.layer,m.dir); });
+        targetVerified=self.lab.is_solved();
+      } catch(e){}
+      if (!targetVerified){
+        rebuildFromScrambleHistory(self);
+        self._lastSolveTelemetry={n:self.n,elapsedMs:elapsedMs,verified:false,error:'Returned path did not match the active cube state'};
+        if(self.ui&&self.ui.status)self.ui.status.textContent='Solver result rejected — active state mismatch';
+        if(self.syncControls)self.syncControls();
+        return;
+      }
       self._lastSolveTelemetry = { n:self.n, elapsedMs:elapsedMs, verified:true, moveCount:res.moveCount, winner:res.winner };
       self.realWinner = res.winner; self.realLanes = res.lanes || [];
       self.lastSolution = res.moves;
@@ -548,21 +596,16 @@ WIRE = r'''
     // "ready to solve". This is what the user is actually watching when they hit
     // Cancel — the search itself finishes in ~100ms.
     function stopReplay(self){
-      var animating = (self.busy && self.phase === 'solving') || (self.queue && self.queue.length) || self._visualSolve;
+      var animating = (self.busy && self.phase === 'solving') || (self.queue && self.queue.length);
       if (!animating) return false;
       if (self.activeMove && self.finalizeMove){ try { self.finalizeMove(); } catch(e){} }
       self.activeMove = null;
-      self.queue = []; self.movesDone = 0; self.totalMoves = 0; self._visualSolve = false;
+      self.queue = []; self.movesDone = 0; self.totalMoves = 0;
       self.phase = 'idle'; self.busy = false;
-      // Rebuild and re-apply the scramble so the visible cube matches the solver's
-      // state again (a half-played solution would otherwise desync the next solve).
-      if (self.buildCube){
-        try {
-          self.buildCube(self.n);
-          if (self.applyInstant) (self.lastScramble || []).forEach(function(m){ self.applyInstant(m); });
-        } catch(e){}
-        self.scrambled = (self.lastScramble || []).length > 0;
-      }
+      // Rebuild both representations from the same history; a half-played
+      // solution must never leave the mesh and Rust cube on different states.
+      try { rebuildFromScrambleHistory(self); } catch(e){}
+      self.hasSolution=false;
       if (self.ui && self.ui.move) self.ui.move.style.display = 'none';
       if (self.ui && self.ui.count) self.ui.count.style.display = 'none';
       return true;
@@ -624,11 +667,9 @@ WIRE = r'''
     ensureWorker(inst);   // warm up the solver worker so it's ready before the first solve
     updateSolveButtons(inst);   // initial state: Solve enabled, Cancel hidden
 
-    // During a visual-only solve there's no real search — don't animate the
-    // fabricated node/generation telemetry the design shows per frame.
+    // Don't animate fabricated telemetry for dedicated solver paths.
     var origUpdateLanes = inst.updateLanes ? inst.updateLanes.bind(inst) : null;
     if (origUpdateLanes) inst.updateLanes = function(f){
-      if (this._visualSolve){ setLanesVisual(this); return; }
       // The 3×3 two-phase solve finishes before the replay even starts, so don't
       // fabricate per-frame beam-search node/generation telemetry on its lane —
       // that would contradict the "two-phase" label. Show it as found; finishLanes
@@ -694,15 +735,15 @@ WIRE = r'''
         var n = this.n||3, telem = this._lastSolveTelemetry;
         var replaying = !!(this.busy && this.phase === 'solving' && telem && telem.n === n && telem.verified);
         if (n > SOLVE_MAX_N){
-          if (note) note.innerHTML = 'This size is <b>visualization-only</b> in the current platform. No search or reduction progress is fabricated.';
-          if (liveEl && liveEl.textContent !== 'Visualization mode — choose a supported size for live solving') liveEl.textContent = 'Visualization mode — choose a supported size for live solving';
+          if (note) note.innerHTML = '<b>Unsupported cube size.</b> Return to Studio and choose a size inside this platform’s replay-verified range.';
+          if (liveEl) liveEl.textContent = 'No solver is available for this size';
         } else {
           if (note) note.innerHTML = 'For 4×4–11×11 this view switches from evolutionary cards to <b>truthful deterministic-reduction telemetry</b>. It shows elapsed activity and replay proof without inventing node counts or percentages.';
           if (liveEl && liveEl.textContent !== 'Reduction telemetry — evolutionary search remains available on 2×2 and 3×3') liveEl.textContent = 'Reduction telemetry — evolutionary search remains available on 2×2 and 3×3';
         }
         if (msg){
           msg.style.display = 'block';
-          var stateKey = n > SOLVE_MAX_N ? ('visual:'+n+':'+SOLVE_MAX_N) :
+          var stateKey = n > SOLVE_MAX_N ? ('unsupported:'+n+':'+SOLVE_MAX_N) :
             this._solvePending ? ('active:'+n+':'+this._solveDispatch) :
             replaying ? ('replay:'+n+':'+telem.moveCount) :
             telem && telem.n === n && telem.verified ? ('verified:'+n+':'+telem.moveCount+':'+Math.round(telem.elapsedMs)) :
@@ -712,7 +753,7 @@ WIRE = r'''
             var pipeline = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 10px;">' +
               ['sticker state','centers','edge wings','reduced 3×3','independent replay'].map(function(s){ return '<span style="padding:5px 8px;border:1px solid #D9E2D5;border-radius:999px;background:#fff;font-size:11px;color:#5E6C59;">'+s+'</span>'; }).join('<span style="color:#A9B3A5;padding:5px 0;">→</span>') + '</div>';
             if (n > SOLVE_MAX_N){
-              msg.innerHTML = '<b>'+n+'×'+n+' is visualization-only.</b><div style="margin-top:7px;">This build runs verified solves through '+SOLVE_MAX_N+'×'+SOLVE_MAX_N+'. Use 2×2/3×3 to watch the evolutionary population, or a supported reduction size to watch solver telemetry.</div>';
+              msg.innerHTML = '<b>'+n+'×'+n+' is not supported.</b><div style="margin-top:7px;">This build intentionally offers only sizes with a replay-verified solver.</div>';
             } else if (this._solvePending){
               msg.innerHTML = '<div style="display:flex;align-items:center;gap:9px;color:#1573E6;"><span style="width:10px;height:10px;border-radius:50%;background:#1573E6;box-shadow:0 0 0 5px rgba(21,115,230,.12);"></span><b>'+
                 (this._solveDispatch === 'native' ? 'Native reduction is active' : 'WASM solver is active') +
@@ -855,10 +896,9 @@ WIRE = r'''
       }
     }
     (function(self){
-      // Scramble depth: enough to fully mix any cube, without the absurd range
-      // that made Solve a guessing game. Cube size can still go big (visual).
+      // Scramble depth stays bounded so every offered challenge remains inside a
+      // measured solver path. Cube size is capped later from the active platform.
       var sd = self.root.querySelector('[data-scramble]'); if (sd){ sd.max = 40; }
-      var ns = self.root.querySelector('[data-nslider]'); if (ns){ ns.max = 1000; }
       // The Calm/Lively swarm-speed toggle and the swarm count (16/36/…) selector
       // don't add anything — hide them; the swarm just shows the whole wall.
       self.root.querySelectorAll('[data-sspeed]').forEach(function(b){ var grp=b.parentElement; if(grp) grp.style.display='none'; });
@@ -872,6 +912,141 @@ WIRE = r'''
     // Native Tauri reduction is the measured 4×4–11×11 desktop path. The
     // standalone browser build stays at the WASM-runtime-verified 5×5 ceiling.
     var SOLVE_MAX_N = nativeCore() ? 11 : 5, SOLVE_MAX_DEPTH = 9, SOLVE_REAL_DEPTH = 30;
+
+    function setCustomError(self, message){
+      var error=self.root.querySelector('[data-alg-error]');
+      if (!error) return;
+      error.textContent=message||'';
+      error.style.display=message ? 'block' : 'none';
+    }
+    function refreshCustomScramble(self){
+      var blocked=!!self.busy||!!self._solvePending, n=self.n||3;
+      var width=self.root.querySelector('[data-turn-width]');
+      if (width){
+        var previous=Math.max(1,Math.min(Number(width.value)||1,n>=4?Math.floor(n/2):1));
+        var maxWidth=n>=4?Math.floor(n/2):1;
+        if (width.dataset.n !== String(n)){
+          width.innerHTML='';
+          for (var w=1;w<=maxWidth;w++){
+            var option=document.createElement('option'); option.value=String(w);
+            option.textContent=w===1?'Outer face':(w+' layers wide'); width.appendChild(option);
+          }
+          width.dataset.n=String(n); width.value=String(Math.min(previous,maxWidth));
+        }
+        width.disabled=blocked;
+      }
+      var atCap=n===2 && (self.scrambleMoveCount||0)>=SOLVE_MAX_DEPTH;
+      self.root.querySelectorAll('[data-turn-face],[data-turn-amount],[data-alg-apply],[data-alg-clear]').forEach(function(el){ el.disabled=blocked||(el.hasAttribute('data-turn-face')&&atCap); });
+      var input=self.root.querySelector('[data-alg-input]'); if(input) input.disabled=blocked;
+      var undo=self.root.querySelector('[data-turn-undo]'); if(undo) undo.disabled=blocked||!!self.hasSolution||!(self._manualGroups&&self._manualGroups.length);
+      var replay=self.root.querySelector('[data-act-replay]');
+      if(replay){
+        var replayDisabled=blocked||!(self.lastSolution&&self.lastSolution.length);
+        replay.disabled=replayDisabled; replay.setAttribute('aria-disabled',String(replayDisabled));
+        replay.style.opacity=replayDisabled?'0.42':'1'; replay.style.pointerEvents=replayDisabled?'none':'auto';
+      }
+      self.root.querySelectorAll('[data-turn-amount]').forEach(function(el){
+        var on=Number(el.dataset.turnAmount)===(self._turnAmount||1);
+        el.setAttribute('aria-pressed',String(on)); el.style.background=on?'#fff':'transparent'; el.style.color=on?'#161514':'#66635C';
+        el.style.boxShadow=on?'0 1px 3px rgba(20,20,18,.1)':'none';
+      });
+      var count=self.root.querySelector('[data-custom-count]'); if(count){ var c=self.scrambleMoveCount||0; count.textContent=c+' move'+(c===1?'':'s'); }
+      var slider=self.root.querySelector('[data-nslider]');
+      if(slider){ slider.min='2'; slider.max=String(SOLVE_MAX_N); slider.step='1'; slider.value=String(n); slider.disabled=blocked; }
+      var inc=self.root.querySelector('[data-inc]'); if(inc) inc.disabled=blocked||n>=SOLVE_MAX_N;
+      var dec=self.root.querySelector('[data-dec]'); if(dec) dec.disabled=blocked||n<=2;
+    }
+    function commitCustomState(self, label){
+      var solved=false;
+      try { solved=!!(self.lab&&self.lab.is_solved()); } catch(e){}
+      self.queue=[]; self.activeMove=null; self.phase='idle'; self.busy=false;
+      self.scrambled=!solved; self.hasSolution=false; self._lastSolveTelemetry=null;
+      self.lastSolution=[]; self.realNotation=null; self.realMoveCount=null;
+      if (self.resetLanes) self.resetLanes();
+      if (self.setSolvedPct) self.setSolvedPct(solved?1:0);
+      if (self.ui&&self.ui.count) self.ui.count.style.display='none';
+      if (self.ui&&self.ui.move) self.ui.move.style.display='none';
+      if (self.ui&&self.ui.status) self.ui.status.textContent=solved?'Custom turns return to solved':(label||'Custom scramble ready to solve');
+      if (self.ui&&self.ui.solCount) self.ui.solCount.textContent='—';
+      if (self.ui&&self.ui.solChips) self.ui.solChips.innerHTML='<span style="font-size:12.5px;color:#66635C;">Solve this custom scramble to see a verified path.</span>';
+      if (self.syncControls) self.syncControls();
+      refreshCustomScramble(self);
+    }
+    function applyCustomAlgorithm(self){
+      if (self.busy||self._solvePending) return;
+      var input=self.root.querySelector('[data-alg-input]'), parsed;
+      try { parsed=parseCustomAlgorithm(input?input.value:'',self.n); }
+      catch(error){ setCustomError(self,String(error&&error.message||error)); return; }
+      setCustomError(self,'');
+      self.resetSolved(true);
+      clearScrambleHistory(self,false);
+      self._customBaseNotation=parsed.groups.map(function(g){return g.notation;}).join(' ');
+      self.scrambleMoveCount=parsed.groups.length;
+      parsed.moves.forEach(function(m){ self.applyInstant(m); self.lab.apply_design_move(m.axis,m.layer,m.dir); self.lastScramble.push(m); });
+      if (self.n===2 && self.scrambleDepth<parsed.groups.length){
+        self.scrambleDepth=parsed.groups.length;
+        var depth=self.root.querySelector('[data-scramble]'); if(depth) depth.value=String(self.scrambleDepth);
+        var value=self.root.querySelector('[data-scramble-val]'); if(value) value.textContent=String(self.scrambleDepth);
+      }
+      if (input) input.value=self._customBaseNotation;
+      commitCustomState(self,'Custom notation applied — ready to solve');
+    }
+    function applyInteractiveTurn(self, face){
+      if (self.busy||self._solvePending) return;
+      if (self.n===2&&(self.scrambleMoveCount||0)>=SOLVE_MAX_DEPTH){ setCustomError(self,'2×2 custom scrambles stop at 9 moves so the exact solver remains complete for the entered sequence.'); return; }
+      var width=self.root.querySelector('[data-turn-width]'), group;
+      try { group=makeFaceTurn(face,width?Number(width.value):1,self._turnAmount||1,self.n); }
+      catch(error){ setCustomError(self,String(error&&error.message||error)); return; }
+      setCustomError(self,'');
+      if (!self.scrambled&&self.hasSolution){ self.resetSolved(true); clearScrambleHistory(self,true); }
+      self._manualGroups=self._manualGroups||[]; self._manualGroups.push(group);
+      group.moves.forEach(function(m){ self.applyInstant(m); self.lab.apply_design_move(m.axis,m.layer,m.dir); self.lastScramble.push(m); });
+      self.scrambleMoveCount=(self.scrambleMoveCount||0)+1;
+      if (self.n===2&&self.scrambleDepth<self.scrambleMoveCount){
+        self.scrambleDepth=self.scrambleMoveCount;
+        var depth=self.root.querySelector('[data-scramble]'); if(depth) depth.value=String(self.scrambleDepth);
+        var depthValue=self.root.querySelector('[data-scramble-val]'); if(depthValue) depthValue.textContent=String(self.scrambleDepth);
+      }
+      var input=self.root.querySelector('[data-alg-input]');
+      if(input) input.value=[self._customBaseNotation,self._manualGroups.map(function(g){return g.notation;}).join(' ')].filter(Boolean).join(' ');
+      commitCustomState(self,group.notation+' applied — ready to solve');
+    }
+    function undoInteractiveTurn(self){
+      if (self.busy||self._solvePending||self.hasSolution||!self._manualGroups||!self._manualGroups.length) return;
+      var group=self._manualGroups.pop();
+      group.moves.slice().reverse().forEach(function(m){ var inv={axis:m.axis,layer:m.layer,dir:-m.dir}; self.applyInstant(inv); self.lab.apply_design_move(inv.axis,inv.layer,inv.dir); });
+      self.lastScramble.splice(Math.max(0,self.lastScramble.length-group.moves.length),group.moves.length);
+      self.scrambleMoveCount=Math.max(0,(self.scrambleMoveCount||0)-1);
+      var input=self.root.querySelector('[data-alg-input]');
+      if(input) input.value=[self._customBaseNotation,self._manualGroups.map(function(g){return g.notation;}).join(' ')].filter(Boolean).join(' ');
+      setCustomError(self,''); commitCustomState(self,'Last manual turn removed');
+    }
+    function configureSupportedSizes(self){
+      self.CUBIE_MAX=SOLVE_MAX_N;
+      self.sliderToN=function(value){ return Math.max(2,Math.min(SOLVE_MAX_N,Math.round(Number(value)||2))); };
+      self.nToSlider=function(value){ return Math.max(2,Math.min(SOLVE_MAX_N,Math.round(Number(value)||2))); };
+      self.root.querySelectorAll('[data-n]').forEach(function(button){
+        var supported=Number(button.dataset.n)<=SOLVE_MAX_N; button.style.display=supported?'':'none';
+        if (supported) button.title='Runs a replay-verified solver';
+      });
+      var note=self.root.querySelector('[data-size-note]');
+      if(note) note.innerHTML='Only replay-verified sizes are offered. <b>'+(nativeCore()?'Desktop':'Browser')+': 2×2–'+SOLVE_MAX_N+'×'+SOLVE_MAX_N+'.</b> Larger cubes are hidden because their runtime and memory costs are not yet reliable enough for a product promise.';
+      if (self.n>SOLVE_MAX_N) self.setN(SOLVE_MAX_N);
+    }
+    function wireCustomScramble(self){
+      self._manualGroups=[]; self._customBaseNotation=''; self._turnAmount=1; self._refreshCustomScramble=refreshCustomScramble;
+      var apply=self.root.querySelector('[data-alg-apply]'); if(apply) apply.addEventListener('click',function(){applyCustomAlgorithm(self);});
+      var clear=self.root.querySelector('[data-alg-clear]'); if(clear) clear.addEventListener('click',function(){ var input=self.root.querySelector('[data-alg-input]');if(input)input.value='';setCustomError(self,'');self.resetSolved(); });
+      var input=self.root.querySelector('[data-alg-input]'); if(input) input.addEventListener('keydown',function(e){if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();applyCustomAlgorithm(self);}});
+      self.root.querySelectorAll('[data-turn-amount]').forEach(function(button){button.addEventListener('click',function(){self._turnAmount=Number(button.dataset.turnAmount);refreshCustomScramble(self);});});
+      self.root.querySelectorAll('[data-turn-face]').forEach(function(button){button.addEventListener('click',function(){applyInteractiveTurn(self,button.dataset.turnFace);});});
+      var undo=self.root.querySelector('[data-turn-undo]'); if(undo) undo.addEventListener('click',function(){undoInteractiveTurn(self);});
+      var previousSync=self.syncControls.bind(self);
+      self.syncControls=function(){ previousSync(); refreshCustomScramble(this); };
+      refreshCustomScramble(self);
+    }
+    configureSupportedSizes(inst);
+    wireCustomScramble(inst);
 
     // Entering Swarm should visibly do work. Small cubes already launch genuine
     // evolutionary trials; supported large cubes auto-start truthful reduction.
@@ -903,8 +1078,7 @@ WIRE = r'''
     //   • 2×2 — three real engines race (meet-in-the-middle, beam, island genetic);
     //   • 3×3 — the two-phase (Kociemba) solver, shown as one near-optimal lane with
     //           the other two hidden (they don't run for the 3×3);
-    //   • 4×4–11×11 — one reduction lane (centers → edges → 3×3 + parity);
-    //   • N>11 — visual playback, honestly labeled as unsearched.
+    //   • 4×4–11×11 — one reduction lane (centers → edges → 3×3 + parity).
     function laneLabelEl(el){ return (el && el.firstElementChild) ? el.firstElementChild.children[1] : null; }
     function applyEngineLabels(self){
       var n = self.n || 3;
@@ -975,8 +1149,8 @@ WIRE = r'''
         }
       }
       if (n > SOLVE_MAX_N){
-        ban.style.cssText = ban._base + 'background:#FBF4E8;color:#9A6A1E;border-color:#F0E0C2;';
-        ban.innerHTML = '<b>'+n+'×'+n+' is visual.</b> 2×2 through '+SOLVE_MAX_N+'×'+SOLVE_MAX_N+' are solved for real; bigger cubes scramble fully and Solve plays back a visual demo.';
+        ban.style.cssText = ban._base + 'background:#FCEEEE;color:#973B3B;border-color:#EDCACA;';
+        ban.innerHTML = '<b>Unsupported size.</b> Choose 2×2 through '+SOLVE_MAX_N+'×'+SOLVE_MAX_N+' so every Solve result can be independently replay-verified.';
       } else if (n === 2 && d > SOLVE_MAX_DEPTH){
         ban.style.cssText = ban._base + 'background:#FBF4E8;color:#9A6A1E;border-color:#F0E0C2;';
         ban.innerHTML = '<b>Deep scramble (depth '+d+').</b> The exact solver may run out of budget. Keep depth ≤ '+SOLVE_MAX_DEPTH+' for a guaranteed solve.';
@@ -1001,11 +1175,11 @@ WIRE = r'''
         cb.addEventListener('click', function(){ cancelSolve(self); });
         solveBtn.parentNode.insertBefore(cb, solveBtn.nextSibling);
       }
-      ['4','5','7','20','50','100','500','1000'].forEach(function(v){
+      ['2','3','4','5','7','11'].forEach(function(v){
         var b = self.root.querySelector('[data-n="'+v+'"]');
         if(!b) return;
         if(Number(v) > SOLVE_MAX_N){
-          b.style.opacity='0.5'; b.title='Visual only — solved for real on 2×2 through '+SOLVE_MAX_N+'×'+SOLVE_MAX_N;
+          b.style.display='none';
         } else {
           b.style.opacity='1'; b.title='Runs the real replay-verified solver';
         }
@@ -1085,18 +1259,39 @@ BOOT = r'''
     if (typeof inst.componentDidMount === 'function') inst.componentDidMount();
     return inst;
   }
+  function lockUntilSolverReady(inst){
+    const originals={solve:inst.solve,scramble:inst.scramble,replay:inst.replay,setN:inst.setN};
+    inst._solverReady=false; inst._solverLoadMessage='Loading verified solver…';
+    const blocked=function(){ if(inst.ui&&inst.ui.status)inst.ui.status.textContent=inst._solverLoadMessage; };
+    inst.solve=blocked; inst.scramble=blocked; inst.replay=blocked; inst.setN=blocked;
+    const selector='[data-act-solve],[data-act-scramble],[data-act-replay],[data-n],[data-inc],[data-dec],[data-nslider],[data-view="swarm"],[data-alg-input],[data-alg-apply],[data-alg-clear],[data-turn-width],[data-turn-amount],[data-turn-face],[data-turn-undo]';
+    inst.root.querySelectorAll(selector).forEach(function(el){el.disabled=true;el.setAttribute('aria-disabled','true');});
+    blocked();
+    return {
+      restoreMethods:function(){inst.solve=originals.solve;inst.scramble=originals.scramble;inst.replay=originals.replay;inst.setN=originals.setN;},
+      lockMethods:function(){inst.solve=blocked;inst.scramble=blocked;inst.replay=blocked;inst.setN=blocked;},
+      enableControls:function(){inst.root.querySelectorAll(selector).forEach(function(el){el.disabled=false;el.removeAttribute('aria-disabled');});}
+    };
+  }
   async function boot(){
     const inst = bindAndMount();
     window.__cubeLab = inst;
+    const gate=lockUntilSolverReady(inst);
     try {
       await init();
+      gate.restoreMethods();
       inst.lab = new CubeLab(inst.n);
       wireRealSolver(inst);
+      inst._solverReady=true;
+      gate.enableControls();
+      if(inst.syncControls)inst.syncControls();
       markLive();
     } catch (e){
-      console.warn('WASM failed to load — solver unavailable; visualization only.', e);
+      gate.lockMethods();
+      inst._solverLoadMessage='Solver failed to load — reload the app';
+      console.warn('WASM failed to load — solver unavailable.', e);
       const status = inst.ui && inst.ui.status;
-      if (status) status.textContent = 'Solver failed to load — visualization only';
+      if (status) status.textContent = inst._solverLoadMessage;
     }
   }
   boot();

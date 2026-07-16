@@ -37,7 +37,7 @@
       "icons/icon.ico"
     ],
     "category": "Education",
-    "shortDescription": "N×N cube solver studio",
-    "longDescription": "Generate scrambled N×N cubes and watch real Rust solvers (meet-in-the-middle, beam, island genetic) find verified solutions — plus a wall of evolutionary trials."
+    "shortDescription": "Replay-verified N×N cube solver studio",
+    "longDescription": "Build random or custom 2×2–11×11 scrambles, solve from the visible sticker state, independently replay every accepted path, and explore truthful evolutionary-computing and reduction telemetry."
   }
 }

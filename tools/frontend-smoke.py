@@ -195,6 +195,96 @@ if (loops!==1 || !runtime.clock) throw new Error('RAF recovery duplicated or omi
     subprocess.run([shutil.which("node") or "node", "-e", script], check=True)
 
 
+def check_custom_scramble(module: str) -> None:
+    """Execute notation parsing and standard face-direction mapping."""
+    format_match = re.search(
+        r"function formatFaceTurn\(face, width, amount\)\{(?P<body>.*?)\n    \}\n    function makeFaceTurn",
+        module,
+        re.DOTALL,
+    )
+    make_match = re.search(
+        r"function makeFaceTurn\(face, width, amount, n\)\{(?P<body>.*?)\n    \}\n    function parseCustomAlgorithm",
+        module,
+        re.DOTALL,
+    )
+    parse_match = re.search(
+        r"function parseCustomAlgorithm\(text, n\)\{(?P<body>.*?)\n    \}\n    function clearScrambleHistory",
+        module,
+        re.DOTALL,
+    )
+    require(format_match is not None, "custom notation formatter missing")
+    require(make_match is not None, "interactive face-turn mapper missing")
+    require(parse_match is not None, "custom algorithm parser missing")
+    script = f"""
+const formatFaceTurn=function(face,width,amount) {{{format_match.group('body')}}};
+const makeFaceTurn=function(face,width,amount,n) {{{make_match.group('body')}}};
+const parseCustomAlgorithm=function(text,n) {{{parse_match.group('body')}}};
+const parsed=parseCustomAlgorithm("R U R' U' Rw2 F2 3Rw",6);
+if (parsed.groups.map(g=>g.notation).join(' ')!=="R U R' U' Rw2 F2 3Rw") throw new Error('notation was not normalized');
+if (parsed.moves.length!==13) throw new Error('wide/half turns expanded incorrectly');
+const right=makeFaceTurn('R',1,1,4).moves[0];
+const left=makeFaceTurn('L',1,1,4).moves[0];
+const leftPrime=makeFaceTurn('L',1,-1,4).moves[0];
+if (JSON.stringify(right)!=='{{"axis":0,"layer":3,"dir":1}}') throw new Error('R direction mismatch');
+if (JSON.stringify(left)!=='{{"axis":0,"layer":0,"dir":-1}}' || leftPrime.dir!==1) throw new Error('L direction mismatch');
+for (const invalid of [['Rw',3],['3Rw',4],['Q',6],['R '.repeat(10),2]]) {{
+  let failed=false; try {{ parseCustomAlgorithm(invalid[0],invalid[1]); }} catch(e) {{ failed=true; }}
+  if (!failed) throw new Error('invalid/unsupported custom notation was accepted: '+invalid[0]);
+}}
+"""
+    subprocess.run([shutil.which("node") or "node", "-e", script], check=True)
+
+
+def check_scramble_lifecycle_and_boot_gate(module: str) -> None:
+    """Exercise coherent history reset/rebuild and the fail-closed WASM boot gate."""
+    clear_match = re.search(
+        r"function clearScrambleHistory\(self, clearInput\)\{(?P<body>.*?)\n    \}\n    function rebuildFromScrambleHistory",
+        module,
+        re.DOTALL,
+    )
+    rebuild_match = re.search(
+        r"function rebuildFromScrambleHistory\(self\)\{(?P<body>.*?)\n    \}\n\n    inst\.scramble",
+        module,
+        re.DOTALL,
+    )
+    gate_match = re.search(
+        r"function lockUntilSolverReady\(inst\)\{(?P<body>.*?)\n  \}\n  async function boot",
+        module,
+        re.DOTALL,
+    )
+    require(clear_match is not None, "coherent scramble-history reset helper missing")
+    require(rebuild_match is not None, "visible/Rust scramble rebuild helper missing")
+    require(gate_match is not None, "fail-closed solver boot gate missing")
+    restore_index = module.index("gate.restoreMethods()")
+    wire_index = module.index("wireRealSolver(inst)", restore_index)
+    enable_index = module.index("gate.enableControls()", wire_index)
+    require(
+        restore_index < wire_index < enable_index,
+        "solver methods must be restored for wiring but controls enabled only after wiring succeeds",
+    )
+    script = f"""
+let input={{value:'R U'}}, error='';
+globalThis.setCustomError=(self,value)=>{{error=value;}};
+const clear=function(self,clearInput) {{{clear_match.group('body')}}};
+let state={{lastScramble:[1],lastSolution:[2],_manualGroups:[3],_customBaseNotation:'R U',scrambleMoveCount:9,realNotation:['R'],realMoveCount:1,realWinner:'x',realLanes:[1],hasSolution:true,_lastSolveTelemetry:{{}},root:{{querySelector:()=>input}}}};
+clear(state,true);
+if (state.lastScramble.length||state.lastSolution.length||state._manualGroups.length||state._customBaseNotation||state.scrambleMoveCount||state.hasSolution||input.value||error) throw new Error('history reset left stale state');
+let visual=[],rust=[],solved=true;
+const rebuild=function(self) {{{rebuild_match.group('body')}}};
+state={{n:4,lastScramble:[{{axis:0,layer:3,dir:1}},{{axis:1,layer:0,dir:-1}}],buildCube(n){{this.built=n;}},applyInstant(m){{visual.push([m.axis,m.layer,m.dir]);}},lab:{{set_size(n){{this.n=n;}},reset(){{rust=[];solved=true;}},apply_design_move(a,l,d){{rust.push([a,l,d]);solved=false;}},is_solved(){{return solved;}}}}}};
+if (!rebuild(state)||state.built!==4||JSON.stringify(visual)!==JSON.stringify(rust)||!state.scrambled) throw new Error('visible and Rust scramble histories diverged');
+const lockUntilSolverReady=function(inst) {{{gate_match.group('body')}}};
+const original={{solve(){{}},scramble(){{}},replay(){{}},setN(){{}}}};
+let elements=[{{disabled:false,setAttribute(){{}},removeAttribute(){{}}}}], inst={{...original,ui:{{status:{{textContent:''}}}},root:{{querySelectorAll(){{return elements;}}}}}};
+let gate=lockUntilSolverReady(inst);
+if (inst.solve===original.solve||!elements[0].disabled) throw new Error('boot did not fail closed');
+inst.solve(); if (!inst.ui.status.textContent.includes('Loading')) throw new Error('blocked action lacked loading status');
+gate.restoreMethods(); if (inst.solve!==original.solve) throw new Error('original methods were not restored for wiring');
+gate.lockMethods(); gate.enableControls(); if (inst.solve===original.solve||elements[0].disabled) throw new Error('boot gate controls/methods are inconsistent');
+"""
+    subprocess.run([shutil.which("node") or "node", "-e", script], check=True)
+
+
 def main() -> int:
     html = INDEX.read_text(encoding="utf-8")
     worker = WORKER.read_text(encoding="utf-8")
@@ -210,6 +300,7 @@ def main() -> int:
     require(parser.tag_counts.get("header") == 1, "generated page must have one <header>")
     require(not parser.external_resources, f"desktop UI must be offline-only: {parser.external_resources}")
     require({"studio-tab", "swarm-tab", "studio-panel", "swarm-panel"} <= parser.ids, "tab IDs/panels missing")
+    require({"custom-algorithm", "custom-algorithm-help", "custom-algorithm-error"} <= parser.ids, "custom scramble controls missing")
 
     tabs = [attrs for role, attrs in parser.roles if role == "tab"]
     require(len(tabs) == 2, "Studio and Swarm must expose exactly two ARIA tabs")
@@ -240,6 +331,14 @@ def main() -> int:
         "Native reduction is active",
         "Progress percentages are intentionally omitted",
         "nativeCore() ? 11 : 5",
+        "parseCustomAlgorithm",
+        "applyCustomAlgorithm",
+        "applyInteractiveTurn",
+        "undoInteractiveTurn",
+        "configureSupportedSizes",
+        "clearScrambleHistory",
+        "rebuildFromScrambleHistory",
+        "lockUntilSolverReady",
         "Math.floor(N/2)",
         "rotatedIdx(idx, m)",
         "positionForIdx(idx)",
@@ -260,9 +359,14 @@ def main() -> int:
         require(marker in haystack, f"frontend contract marker missing: {marker}")
 
     require("Math.round(np.x / this.step)" not in module, "even-N cubies must never snap to the integer-origin lattice")
+    require("visualization-only" not in html.lower(), "visualization-only product mode must not return")
+    require("Playing visual demo" not in html, "unsearched visual solve must not return")
+    require('data-n="20"' not in html and 'max="1000"' not in html and "Math.pow(50000" not in html, "unsupported size controls must not return")
     check_lattice_rotation(module)
     check_swarm_scheduler(module)
     check_boot_recovery(module)
+    check_custom_scramble(module)
+    check_scramble_lifecycle_and_boot_gate(module)
 
     require("d.moves" not in worker, "solver worker must not receive scramble moves")
     require("lab.load_face_colors(d.colors)" in worker, "solver worker sticker-only boundary missing")
@@ -270,7 +374,7 @@ def main() -> int:
     node_check(module, ".mjs")
     node_check(worker, ".mjs")
 
-    print("frontend smoke passed: structure, accessibility, exact cubie lattice, Swarm startup, JS syntax, worker/native privacy")
+    print("frontend smoke passed: structure, accessibility, supported-size cap, custom scrambles, exact cubie lattice, Swarm startup, JS syntax, worker/native privacy")
     return 0
 
 
