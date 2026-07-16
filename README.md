@@ -1,202 +1,264 @@
-# Rust N×N Cube Solver Lab
+<div align="center">
+  <img src="src-tauri/icons/128x128.png" width="96" alt="Cube Solver icon">
 
-An interactive desktop app that generates scrambled N×N Rubik's cubes and races
-several solver strategies — a deterministic meet-in-the-middle search, a beam
-search, and a parallel **island-model genetic algorithm** — to find and replay a
-verified solution. It renders an interactive 3D cube, a 2D net, and a "wall of
-cubes" grid of many cubes solving at once.
+# Cube Solver
 
-Built as a Rust workspace with a clean separation between the cube model, the
-solvers, persistence, and the GUI.
+**A local-first N×N cube solver studio built with Rust, WebAssembly, Tauri, and evolutionary computing.**
 
-## Two front-ends, one solver core
+Create a legal scramble, solve from the visible stickers alone, and watch only solutions that independently replay to solved.
 
-1. **Cube Solver** — the polished studio UI as a **cross-platform native desktop
-   app** (Tauri, `src-tauri/` + `web/`). The interface is the refined web design;
-   the cube model and solvers run as WebAssembly compiled from `cube_core` /
-   `cube_solver`. *Recommended.*
-2. **Solver Lab** — the original `eframe`/`egui` desktop app
-   (`crates/solver_lab_app`).
+[![CI](https://github.com/AdamNolle/Cube-Solver/actions/workflows/ci.yml/badge.svg)](https://github.com/AdamNolle/Cube-Solver/actions/workflows/ci.yml)
+[![Desktop](https://github.com/AdamNolle/Cube-Solver/actions/workflows/desktop.yml/badge.svg)](https://github.com/AdamNolle/Cube-Solver/actions/workflows/desktop.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/core-Rust-dea584.svg)](https://www.rust-lang.org/)
 
-### Run Cube Solver (native desktop app)
+</div>
+
+> [!IMPORTANT]
+> **Cube Solver only offers sizes it can genuinely solve and replay-verify.**
+> The native desktop app supports **2×2–11×11**. The standalone browser build supports **2×2–5×5**. Larger sizes are intentionally hidden because their time and memory costs are not yet reliable enough for a product promise.
+
+## What you can do
+
+- **Generate a scramble** using cryptographically strong randomness where available.
+- **Build your own scramble** by typing standard notation such as `R U R' U'`, `Rw`, or `3Rw2`.
+- **Turn the cube yourself** with accessible face, direction, and wide-turn controls.
+- **Solve without revealing the scramble history** to the Worker or native solver.
+- **Cancel long searches or replays** without leaving the visual cube and Rust cube out of sync.
+- **Watch evolutionary computing** on real 2×2/3×3 candidate populations.
+- **Inspect truthful reduction telemetry** while 4×4–11×11 cubes are solved.
+
+## A 60-second tour
+
+1. **Choose a supported size.** Desktop offers 2×2 through 11×11; the browser stops at 5×5.
+2. **Create the state.** Press **Scramble**, enter an algorithm, or turn faces manually.
+3. **Press Solve.** The solver receives the complete sticker-color state—not the scramble sequence.
+4. **Wait or cancel.** Small cubes run in a Web Worker; desktop reduction runs on a cancellable native Rust thread.
+5. **Verify and replay.** A path is accepted only after its legal moves independently replay to solved.
+6. **Open Swarm.** Small cubes show live evolutionary trials; larger supported cubes show the real reduction pipeline.
+
+## What solves each cube?
+
+| Where | Size | Solver path | Execution |
+|---|---:|---|---|
+| Browser + desktop | **2×2** | Bounded meet-in-the-middle, beam, and island-GA strategies; shortest verified candidate wins | WASM Worker |
+| Browser + desktop | **3×3** | Two-phase Kociemba-style search | WASM Worker |
+| Standalone browser | **4×4–5×5** | Deterministic reduction | WASM Worker |
+| Native desktop | **4×4–11×11** | Centers → edge wings → parity → reduced 3×3 | Native Rust command thread |
+
+The 3×3 path is a fast two-phase solver, **not an optimal solver**. The 4×4+ path is deterministic reduction, while evolutionary search remains educational and supplemental rather than the completeness mechanism.
+
+### Why stop at 11×11 on desktop?
+
+A larger cube is easy to draw, but drawing one is not the same as solving one.
+
+Every advertised size must pass all of these gates:
+
+- legal-move solving from sticker colors,
+- independent replay to solved,
+- bounded memory and runtime on ordinary machines,
+- cancellation without state corruption,
+- repeatable tests on Linux, macOS, and Windows.
+
+Research-only replay evidence currently reaches beyond the product ceiling, including strict runs through N=44, but frontier cases can consume substantial time and memory. The UI therefore stops at the range we can defend as a real desktop feature. See [`docs/ARBITRARY_N_RESEARCH.md`](docs/ARBITRARY_N_RESEARCH.md) for the evidence and remaining limits.
+
+## Build your own scramble
+
+### Type move notation
+
+Examples:
+
+```text
+R U R' U'
+R2 F2 U2
+Rw U 3Rw2 F'
+```
+
+Supported notation:
+
+- faces: `U D L R F B`,
+- counter-clockwise suffix: `'`,
+- half-turn suffix: `2`,
+- wide turns: `Rw` or `3Rw`,
+- lowercase wide-turn aliases such as `r`.
+
+Wide turns are available on 4×4 and larger cubes and are limited to half the cube width. That keeps the fixed face orientation compatible with the supported solver paths. Custom 2×2 sequences are capped at nine moves so the exact bounded search can always search at least as deep as the entered sequence.
+
+### Turn faces interactively
+
+Choose:
+
+1. the turn width,
+2. `90°`, `−90°`, or `180°`,
+3. one of `U D L R F B`.
+
+Each press applies a real legal move to both the rendered cube and the Rust cube model. **Undo last manual turn** reverses the most recent interactive move. Applying notation starts from solved; interactive turns can be added to the current scramble.
+
+## Evolutionary-computing concepts
+
+Evolutionary computing asks: _what if possible solutions could breed better solutions?_
+
+| Concept | Meaning in Cube Solver |
+|---|---|
+| **Genome** | A candidate sequence of legal cube moves |
+| **Population** | A collection of candidate move sequences |
+| **Fitness** | Primarily how many stickers remain incorrect, with a small preference for shorter genomes in the solver-lane GA |
+| **Selection** | Tournament selection favors stronger candidates without always choosing the same parent |
+| **Mutation** | Insert, remove, or replace moves |
+| **Crossover** | Join a prefix from one candidate to a suffix from another |
+| **Island model** | Several populations explore independently instead of collapsing onto one idea |
+| **Migration** | Strong candidates occasionally move between islands |
+| **Stagnation restart** | A stuck population keeps its best candidate but refreshes the rest |
+| **Convergence** | A candidate reaches a solved, replay-verified state |
+
+### What Swarm really shows
+
+For **2×2 and 3×3**, every card is a live evolutionary trial synchronized to the Studio cube. The cards show sticker mismatch, genome length, mutation/crossover origin, and plateau behavior. Green means that trial reached solved.
+
+The UI passes the local scramble moves to Swarm only to reconstruct the shared starting cube. Evolutionary candidates search from that resulting state; they do not receive or return a stored inverse.
+
+For **4×4–11×11**, Swarm does **not** pretend evolution is solving the cube. It switches to deterministic-reduction telemetry: elapsed activity, the centers/edges/reduced-3×3 pipeline, cancellation, and final replay proof.
+
+## Verification and privacy
+
+Cube Solver is local-first:
+
+- no cloud solver,
+- no analytics runtime,
+- no external fonts or JavaScript at runtime,
+- vendored three.js,
+- an offline-focused Tauri content-security policy.
+
+For normal Studio solves, the Worker or Tauri command receives:
+
+```text
+N + exactly 6 × N² sticker-color values
+```
+
+It does **not** receive the scramble sequence. Returned moves are replayed from the original state, and success is reported only if replay reaches solved.
+
+This is an implementation fairness boundary—not a cryptographic proof—but it prevents the normal solver path from simply reading and reversing a hidden scramble history.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    UI[Three.js Studio / Swarm] -->|2×2–5×5 sticker state| Worker[WASM Web Worker]
+    UI -->|desktop 4×4–11×11 sticker state| Tauri[Tauri native command]
+    Worker --> Core[cube_core + cube_solver]
+    Tauri --> Core
+    Core --> Verify[Independent legal-move replay]
+    Verify --> UI
+```
+
+| Path | Responsibility |
+|---|---|
+| `crates/cube_core` | Sticker cube, legal face/wide/slice turns, scramble primitives |
+| `crates/cube_solver` | Two-phase 3×3, bounded 2×2 strategies, EC workers, deterministic reduction |
+| `crates/cube_wasm` | WASM bridge, Swarm population, sticker-only solve boundary |
+| `src-tauri` | Native desktop shell and cancellable 4×4–11×11 solve commands |
+| `tools/design-source.txt` | Authored Studio/Swarm interface |
+| `tools/gen-index.py` | Generates `web/index.html` and wires the real solver into the interface |
+| `web/solver-worker.js` | Off-main-thread browser/WASM solving |
+| `crates/solver_lab_app` | Legacy/experimental egui frontend |
+
+## Run locally
+
+### Prerequisites
+
+- stable Rust,
+- the `wasm32-unknown-unknown` target,
+- [`wasm-pack`](https://rustwasm.github.io/wasm-pack/),
+- [Tauri CLI v2](https://v2.tauri.app/start/prerequisites/),
+- platform-specific Tauri system dependencies.
 
 ```sh
-# WASM solver core → generated into web/pkg (rebuild after changing the Rust)
+rustup target add wasm32-unknown-unknown
+cargo install tauri-cli --version '^2' --locked
+```
+
+### Native desktop app
+
+```sh
+cd src-tauri
+cargo tauri dev
+```
+
+The Tauri configuration builds the WASM package automatically before development and production builds.
+
+```sh
+cd src-tauri
+cargo tauri build
+```
+
+### Standalone browser
+
+```sh
 wasm-pack build crates/cube_wasm --release --target web \
   --out-dir "$PWD/web/pkg" --out-name cube_wasm
-
-cd src-tauri
-cargo tauri dev      # run the app in a dev window
-cargo tauri build    # native installer for the current OS
+python3 -m http.server -d web 8000
 ```
 
-`cargo tauri build` can produce native bundles per OS — `.app`/`.dmg` (macOS),
-`.msi`/`.exe` (Windows), and `.deb`/`.AppImage` (Linux). The three-OS CI matrix
-builds `.app`/`.dmg`, `.msi`/NSIS `.exe`, and `.deb`; it intentionally skips the
-flakier Linux AppImage bundler. Requires a stable Rust toolchain plus the
-[Tauri prerequisites](https://tauri.app/start/prerequisites/)
-(on Linux, the WebKitGTK dev packages listed in `desktop.yml`).
+Then open <http://localhost:8000>. ES modules and WebAssembly must be served over HTTP; opening `web/index.html` through `file://` will not work.
 
-## How Cube Solver works
-
-Cube Solver is the polished web UI **driven by the real Rust solver**, packaged as a
-native desktop app. The lightweight 2×2/3×3 engines run in a WASM worker; desktop
-4×4–11×11 reduction runs on a cancellable native Rust thread. Larger sizes are
-explicitly labeled visualization-only rather than presented as searched solutions:
-
-```
-                         ┌─ wasm-pack → Web Worker (2×2/3×3; browser reduction ≤5×5)
-cube_core + cube_solver ─┤
-                         └─ Tauri native command thread (desktop reduction 4×4–11×11)
-                                           │
-                                 web/index.html (three.js UI)
-```
-
-### Studio
-
-1. **Scramble** — applies random turns to the on-screen cube *instantly*. The
-   2×2/3×3 use outer turns; supported larger cubes use standard contiguous wide
-   turns from either face, mixing inner layers while staying within the measured
-   reduction corpus.
-2. **Solve** — the cube's complete **sticker state** (never the scramble moves) is
-   handed to the solver, which returns a replay-verified solution; the cube then
-   animates it.
-   - 2×2/3×3 run in a **Web Worker**. Desktop 4×4–11×11 reduction runs through a
-     Tauri command on a native blocking thread. Both keep the UI responsive; native
-     cancellation sets the same cooperative control checked throughout reduction.
-   - Automatic scrambles use the platform cryptographic RNG where available and
-     avoid adjacent same-axis turns. Every solver boundary receives only the
-     `6·N²` visible color indices, so it cannot replay a hidden inverse sequence.
-3. **Solver race / best-path solver** — the panel adapts to the cube:
-   - **3×3** — a real **two-phase (Kociemba) solver** (`cube_solver::kociemba`): it
-     orients the pieces into the UD-slice subgroup (phase 1) then solves the
-     permutation within it (phase 2), using pruning tables built once at startup.
-     It cracks **any** 3×3 scramble in about **20 moves** (typically ≤~26, standard
-     face-turn metric) — a near-optimal best path, not the scramble inverse — and
-     runs off-thread in the worker.
-   - **2×2** — three independent engines genuinely race: **meet-in-the-middle**
-     (exact, bidirectional BFS), **beam search**, and an **island genetic algorithm**;
-     the shortest verified solution wins.
-
-**What actually solves:** **2×2 and 3×3 are production solver paths** — the 3×3 by
-the two-phase solver (any legal scramble), the 2×2 by the engine race. **Desktop
-4×4–11×11 use native deterministic reduction** (centers → wing pairing → reduced
-3×3 + parity), and every returned path is replayed before success is reported. The
-standalone browser build exposes only its runtime-smoked reduction range through
-5×5. **12×12 and above are visualization-only** in the desktop app and are labeled
-as such.
-Research toward resource-bounded arbitrary N is tracked in
-[`docs/ARBITRARY_N_RESEARCH.md`](docs/ARBITRARY_N_RESEARCH.md).
-
-### Swarm
-
-Swarm is deliberately dual-mode. On 2×2/3×3 it is a wall of independent **real
-evolutionary trials** synchronized to your Studio cube: candidates mutate/recombine,
-show exact sticker mismatch and genome telemetry, turn green when solved, then
-restart. On 4×4–11×11 it switches to **truthful deterministic-reduction telemetry**:
-live elapsed activity, the centers → edges → reduced-3×3 pipeline, and the final
-move count/replay proof. It never invents evolutionary progress for large cubes.
-
-### Robustness notes
-
-- `web/solver-worker.js` loads WASM for browser/off-thread solving. Desktop reduction
-  uses `solve_stickers`/`cancel_solve` Tauri commands; reduction never runs on the UI
-  thread. A Node runtime smoke catches wasm32 traps that compilation alone cannot.
-- three.js (r128) is vendored in `web/vendor/`, so the app works offline.
-- The UI is intentionally inline-style-heavy. Tauri CSP nonce rewriting is disabled
-  **only for `style-src`** so packaged WebViews honor those styles; script nonce/hash
-  rewriting and the remaining offline-only CSP restrictions stay enabled. Build and
-  frontend smoke guards prevent this release-only styling regression from returning.
-- The Tauri shell builds the WASM via `beforeBuildCommand`, so a fresh
-  `cargo tauri build` is self-contained.
-- A WebGL failure (e.g. headless Linux WebKitGTK) degrades gracefully — the solver
-  UI stays usable with a "3D unavailable" notice instead of a blank window.
-
-## Workspace layout
-
-| Crate | Responsibility |
-|-------|----------------|
-| `cube_core` | Cube model (`StickerCube`), moves (incl. wide/inner-slice), scramble generation. O(N) in-place layer rotation so huge cubes stay fast. |
-| `cube_solver` | The real 3×3 two-phase solver (`kociemba`); exact, beam, and island-evolution workers; and the feature-gated experimental N×N reduction engine. |
-| `solver_store` | SQLite (bundled) persistence of solve history. |
-| `solver_lab_app` | `eframe`/`egui` GUI: 3D viewport, 2D net, the wall-of-cubes grid, controls, history. |
-
-## Build & run
+### Legacy Solver Lab
 
 ```sh
 cargo run --release -p solver_lab_app
 ```
 
-Requires a stable Rust toolchain. On Linux the GUI needs the usual `eframe`
-system libraries (`libgtk-3-dev`, `libxcb-*`, `libxkbcommon-dev`); see
-`.github/workflows/ci.yml` for the exact list.
+The egui Solver Lab is an experimental second frontend with its own controls, local SQLite history, and wall view. It should not be confused with the recommended Tauri Studio documented above.
 
-## Using the app
+## Developer notes
 
-- **N / scramble / wide span / seed** — configure the challenge; **New challenge**
-  generates it off the UI thread (no freeze even at large N).
-- **Solve** — runs all workers in parallel; the fewest-move *verified* path wins.
-- **Replay best** — animates the winning solution turn by turn.
-- **View tabs** — `3D cube` (drag to orbit), `2D net`, and `Wall` (a grid of
-  independent cubes perpetually solving, with level-of-detail + virtualization).
-- **Theme / scale** — light/dark toggle and UI scaling.
-- **Shortcuts** — `Space` solve · `N` new · `R` replay · `C`/`V`/`G` switch views.
-
-History is stored in an OS-appropriate data directory (Application Support /
-`%APPDATA%` / XDG), falling back to in-memory if unavailable.
-
-## Solvers
-
-- **Two-phase (Kociemba)** (`cube_solver::kociemba`) — the real 3×3 engine. A
-  cubie-level model with two-phase coordinates (twist/flip/UD-slice, then the
-  permutation), BFS pruning tables, and IDA* search. Solves any 3×3 scramble in
-  about 20 face turns (typically ≤~26) and is replay-verified against `cube_core`.
-- **DeterministicSolver** — bidirectional (meet-in-the-middle) BFS over a
-  scramble-aware move set (including wide turns), returning a replay-verified
-  shortest path within budget.
-- **BeamSearchWorker** — beam search minimizing sticker mismatch.
-- **EvolutionaryWorker** — a parallel **island-model GA**: independent islands
-  evolved with tournament selection, cut-and-splice crossover, adaptive mutation,
-  ring migration, and stagnation restarts. Deterministic per seed.
-
-### Scaling to massive cubes
-
-The cube model touches only the affected bands: a strict inner-slice turn is O(N)
-and an outer-face turn is O(N²). A repeatable release benchmark is provided at
-`crates/cube_core/examples/turn_scaling.rs`. The research-backed path to solving
-resource-bounded arbitrary N is deterministic **reduction**; evolutionary/RL
-methods alone do not provide completeness across dimensions. The reduction pipeline
-now includes dynamic visible-form parity normalization and orbit-local correction;
-full legal-move replay evidence extends through research-only N=44. The shipped UI
-remains capped at N=11 because frontier reliability and finite-resource costs—not a
-hidden history shortcut—still limit honest product claims. See
-[`docs/ARBITRARY_N_RESEARCH.md`](docs/ARBITRARY_N_RESEARCH.md) for evidence, failed
-experiments, required gates, and primary references.
-
-## Development
+### Canonical verification gate
 
 ```sh
-cargo test --workspace                                   # all tests
-cargo clippy --workspace --all-targets -- -D warnings    # lint gate
-cargo fmt --all -- --check                               # format gate
-python3 tools/gen-index.py                                # regenerate web/index.html
-python3 tools/frontend-smoke.py                           # HTML/ARIA/JS/worker/native contract smoke
-node tools/wasm-runtime-smoke.mjs                         # generated WASM runtime + replay smoke
+cargo fmt --all -- --check
+python3 tools/gen-index.py --check
+python3 tools/frontend-smoke.py
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+cargo build -p cube_wasm --target wasm32-unknown-unknown
+cargo build --release --workspace
+cargo check --manifest-path src-tauri/Cargo.toml
+node --check web/solver-worker.js
 ```
 
-CI runs format + clippy + tests + release build on Linux, macOS, and Windows.
+After generating `web/pkg/`, also run:
 
-### The web UI is generated
+```sh
+node tools/wasm-runtime-smoke.mjs
+```
 
-`web/index.html` is **generated** by `tools/gen-index.py`, which wraps the design
-component in `tools/design-source.txt` with the real Rust/WASM solver wiring
-(`wireRealSolver`). Edit the generator, not `index.html` directly, then re-run it.
-A `build.rs` guard fails the Tauri build loudly if `web/index.html` is missing or
-stale, so a broken frontend can never be silently embedded into a bundle.
+Slow reduction corpora and frontier research tests are intentionally ignored by routine `cargo test`; release workflows invoke the advertised-range gates explicitly.
 
-> ⚠️ **Don't keep this repo in an iCloud/Dropbox-synced folder.** Sync can delete
-> or duplicate (`… 2.html`) source files mid-build, producing apps built from a
-> stale frontend. Clone it somewhere local (e.g. `~/code/`).
+### Generated frontend
+
+Do not hand-edit `web/index.html`.
+
+1. Edit `tools/design-source.txt` for authored layout/interaction changes.
+2. Edit `tools/gen-index.py` for solver wiring and runtime behavior.
+3. Run `python3 tools/gen-index.py`.
+4. Run `python3 tools/frontend-smoke.py`.
+
+`src-tauri/build.rs` rejects missing or obviously incomplete generated output. CI’s exact `gen-index.py --check` gate detects generator drift.
+
+### Two Cargo workspaces
+
+The root Rust workspace contains the cube crates and legacy app. `src-tauri` is a separate workspace. Run Tauri-specific format, Clippy, tests, and packaging commands from `src-tauri/` or with `--manifest-path`.
+
+### Troubleshooting
+
+Avoid keeping active build trees in a cloud-synchronized folder. Sync tools can duplicate or replace generated sources while Tauri embeds them, producing a package from stale assets.
+
+## Releases
+
+The project builds native packages for Linux, macOS, and Windows in GitHub Actions. The first `v0.1.0` release is prepared as a **draft** until trusted Apple notarization and Windows publisher-signing credentials are configured.
+
+Unsigned development artifacts can be structurally valid and checksum-verified while still triggering Gatekeeper or SmartScreen warnings. Checksums prove file integrity; they do not establish a trusted publisher identity.
+
+See [`docs/RELEASING.md`](docs/RELEASING.md) for artifact contracts, validation steps, signing requirements, and the draft-to-public checklist.
 
 ## License
 
