@@ -225,10 +225,16 @@ jobs:
             printf 'expected one deb/rpm/AppImage; got %s/%s/%s\n' "${#debs[@]}" "${#rpms[@]}" "${#appimages[@]}" >&2
             exit 1
           }
-          [[ "$(dpkg-deb -f "${debs[0]}" Version)" == "$VERSION" ]]
-          [[ "$(dpkg-deb -f "${debs[0]}" Architecture)" == "amd64" ]]
-          [[ "$(rpm -qp --qf '%{VERSION}' "${rpms[0]}")" == "$VERSION" ]]
-          [[ "$(rpm -qp --qf '%{ARCH}' "${rpms[0]}")" == "x86_64" ]]
+          deb_version="$(dpkg-deb -f "${debs[0]}" Version)"
+          deb_arch="$(dpkg-deb -f "${debs[0]}" Architecture)"
+          rpm_version="$(rpm -qp --qf '%{VERSION}' "${rpms[0]}")"
+          rpm_arch="$(rpm -qp --qf '%{ARCH}' "${rpms[0]}")"
+          printf 'package metadata: deb=%s/%s rpm=%s/%s\n' \
+            "$deb_version" "$deb_arch" "$rpm_version" "$rpm_arch"
+          [[ "$deb_version" == "$VERSION" ]] || { echo "deb version is $deb_version, expected $VERSION" >&2; exit 1; }
+          [[ "$deb_arch" == "amd64" ]] || { echo "deb architecture is $deb_arch, expected amd64" >&2; exit 1; }
+          [[ "$rpm_version" == "$VERSION" ]] || { echo "rpm version is $rpm_version, expected $VERSION" >&2; exit 1; }
+          [[ "$rpm_arch" == "x86_64" ]] || { echo "rpm architecture is $rpm_arch, expected x86_64" >&2; exit 1; }
           smoke_binary() {
             local binary="$1" label="$2" log="/tmp/cube-solver-${2}.log"
             set +e
