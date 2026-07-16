@@ -179,7 +179,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            appstream binutils build-essential curl dbus-x11 desktop-file-utils \
+            appstream binutils build-essential curl dbus-x11 desktop-file-utils elfutils \
             file flatpak flatpak-builder libayatana-appindicator3-dev librsvg2-dev \
             libssl-dev libwebkit2gtk-4.1-dev libxdo-dev patchelf wget xvfb
 
