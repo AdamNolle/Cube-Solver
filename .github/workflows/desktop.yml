@@ -9,10 +9,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  PSExecutionPolicyPreference: RemoteSigned
+
 jobs:
   build:
     name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (startsWith(matrix.os, 'ubuntu-') && fromJSON('["self-hosted","Linux","X64","personal-ci"]') || startsWith(matrix.os, 'windows-') && fromJSON('["self-hosted","Windows","X64","personal-ci"]') || matrix.os) || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -26,7 +29,38 @@ jobs:
           - os: windows-latest
             bundles: nsis
     steps:
+      - name: Isolate personal Linux Rust toolchains
+        if: runner.os == 'Linux' && runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          tools="$(dirname "$RUNNER_TEMP")/_tool"
+          echo "CARGO_HOME=$tools/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$tools/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_BUILD_JOBS=2" >> "$GITHUB_ENV"
+          echo "$tools/cargo/bin" >> "$GITHUB_PATH"
+      - name: Set up personal Windows build tools
+        if: runner.os == 'Windows' && runner.environment == 'self-hosted'
+        shell: powershell
+        run: |
+          $paths = @('C:\Program Files\Git\bin', 'C:\Program Files\Git\cmd', 'C:\Program Files\PowerShell\7', 'C:\Program Files\GitHub CLI', 'C:\Program Files\7-Zip', 'C:\msys64\ucrt64\bin')
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if ($vs) { $paths += "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"; $paths += "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja" }
+          }
+          $paths | Where-Object { Test-Path $_ } | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          'AGENT_TOOLSDIRECTORY=C:\personal-ci\toolcache' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          'DOTNET_INSTALL_DIR=C:\personal-ci\toolcache\dotnet' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $tools = Join-Path (Split-Path $env:RUNNER_TEMP -Parent) '_tool'
+          "CARGO_HOME=$tools\cargo" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RUSTUP_HOME=$tools\rustup" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$tools\cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - uses: actions/checkout@v4
+
+      - name: Install Node for browser runtime checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
       - name: Install Python
         uses: actions/setup-python@v5
