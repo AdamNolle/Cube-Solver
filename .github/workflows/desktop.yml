@@ -12,7 +12,7 @@ on:
 jobs:
   build:
     name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (startsWith(matrix.os, 'ubuntu-') && fromJSON('["self-hosted","Linux","X64","personal-ci"]') || startsWith(matrix.os, 'windows-') && fromJSON('["self-hosted","Windows","X64","personal-ci"]') || matrix.os) || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +27,11 @@ jobs:
             bundles: nsis
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Node for browser runtime checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
       - name: Install Python
         uses: actions/setup-python@v5

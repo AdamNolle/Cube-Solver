@@ -1,0 +1,55 @@
+name: Personal runner preflight
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runner-preflight:
+    name: Personal ${{ matrix.os }} runner
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ matrix.labels }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: Linux
+            labels: [self-hosted, Linux, X64, personal-ci]
+          - os: Windows
+            labels: [self-hosted, Windows, X64, personal-ci]
+    steps:
+      - name: Verify Linux build environment
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          git --version
+          bash --version | head -1
+          node --version
+          python3 --version
+          gh --version | head -1
+          cmake --version | head -1
+      - name: Verify Windows build environment
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($tool in @('git','bash','pwsh','gh')) {
+            $command = Get-Command $tool -ErrorAction Stop
+            Write-Output "$tool available at $($command.Source)"
+          }
+          git --version
+          pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          Get-Command cmake -ErrorAction Stop | Select-Object Name,Source
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Microsoft C++ toolchain is missing' }
+          Write-Output "MSVC installation: $vs"
+          Get-Command 7z -ErrorAction Stop | Select-Object Name,Source
