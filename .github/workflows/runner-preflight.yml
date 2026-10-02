@@ -3,11 +3,14 @@ name: Personal runner preflight
 on:
   pull_request:
     paths:
-      - '.github/workflows/**'
+      - ".github/workflows/**"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  PSExecutionPolicyPreference: RemoteSigned
 
 jobs:
   runner-preflight:
@@ -24,6 +27,17 @@ jobs:
           - os: Windows
             labels: [self-hosted, Windows, X64, personal-ci]
     steps:
+      - name: Set up personal Windows build tools
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $paths = @('C:\Program Files\Git\bin', 'C:\Program Files\Git\cmd', 'C:\Program Files\PowerShell\7', 'C:\Program Files\GitHub CLI', 'C:\Program Files\7-Zip')
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if ($vs) { $paths += "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"; $paths += "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja" }
+          }
+          $paths | Where-Object { Test-Path $_ } | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Verify Linux build environment
         if: runner.os == 'Linux'
         shell: bash
